@@ -67,8 +67,17 @@ pub async fn listen_task(ssdp_socket: Arc<UdpSocket>, ssdp_helper: Arc<Interacti
 
         //We have a valid ssdp:discover request, although the rfc is soooooo vague it hurts.
         if let Some(header) = st_header {
-            if ssdp_method == "M-SEARCH" && header == "urn:schemas-upnp-org:device:MediaServer:1" {
-                info!(target: "dlnaproxy", "Responding to a M-SEARCH request for a MediaServer from {sender}.", sender=src_addr);
+            // Respond to M-SEARCH requests for:
+            // - MediaServer:1 (specific device type)
+            // - ssdp:all (discover all devices)
+            // - upnp:rootdevice (discover all root devices)
+            let should_respond = ssdp_method == "M-SEARCH"
+                && (header == "urn:schemas-upnp-org:device:MediaServer:1"
+                    || header == "ssdp:all"
+                    || header == "upnp:rootdevice");
+
+            if should_respond {
+                info!(target: "dlnaproxy", "Responding to M-SEARCH request (ST: {st}) from {sender}.", st=header, sender=src_addr);
 
                 if let Err(msg) = ssdp_helper.send_ok(&ssdp_socket, src_addr).await {
                     warn!(target: "dlnaproxy", "Couldn't send ssdp:alive: {}", msg);
