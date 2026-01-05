@@ -24,3 +24,4 @@ quick-xml = { version = "0.36.2", features = ["serialize"] }
 thiserror = "1.0.64"
 anyhow = "1.0.89"
 tokio = { version = "1.40.0", features = ["rt-multi-thread", "macros", "time", "net", "signal"] }
+socket2 = { version = "0.5", features = ["all"] }

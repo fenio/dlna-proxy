@@ -1,14 +1,16 @@
-use std::{net::Ipv4Addr, os::fd::AsFd as _, sync::Arc, time::Duration};
+use std::{net::{Ipv4Addr, SocketAddrV4}, sync::Arc, time::Duration};
 use tokio::net::UdpSocket;
+use socket2::{Domain, Protocol, Socket, Type};
 
 use anyhow::{Context, Result};
 
 use log::info;
 
 #[cfg(any(target_os = "android", target_os = "linux"))]
-use nix::sys::socket::sockopt::BindToDevice;
+use std::os::fd::AsFd as _;
 
-use nix::sys::socket::{self, sockopt::ReuseAddr};
+#[cfg(any(target_os = "android", target_os = "linux"))]
+use nix::sys::socket::{self, sockopt::BindToDevice};
 
 use broadcast::broadcast_task;
 use listener::listen_task;
@@ -80,18 +82,58 @@ impl SSDPManager {
 }
 
 async fn ssdp_sockets(broadcast_iface: Option<String>) -> Result<(Arc<UdpSocket>, Arc<UdpSocket>)> {
-    // Listen socket on port 1900 for M-SEARCH queries
-    let listen_socket = UdpSocket::bind(LISTEN_ADDRESS)
-        .await
-        .context("Failed to bind SSDP listen socket")?;
+    // Create listen socket using socket2 to set SO_REUSEADDR/SO_REUSEPORT BEFORE binding
+    let listen_socket = {
+        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
+            .context("Failed to create listen socket")?;
 
-    socket::setsockopt(&listen_socket.as_fd(), ReuseAddr, &true)
-        .context("Failed to set SO_REUSEADDR on listen socket.")?;
+        // Set SO_REUSEADDR before binding - allows multiple processes to bind to the same port
+        socket.set_reuse_address(true)
+            .context("Failed to set SO_REUSEADDR on listen socket")?;
 
-    // Broadcast socket on ephemeral port for NOTIFY announcements
-    let broadcast_socket = UdpSocket::bind(BROADCAST_ADDRESS)
-        .await
-        .context("Failed to bind SSDP broadcast socket")?;
+        // On Linux, also set SO_REUSEPORT for multicast
+        #[cfg(target_os = "linux")]
+        socket.set_reuse_port(true)
+            .context("Failed to set SO_REUSEPORT on listen socket")?;
+
+        // Bind to port 1900 for M-SEARCH queries
+        let addr = SocketAddrV4::new(LISTEN_ADDRESS.0, LISTEN_ADDRESS.1);
+        socket.bind(&addr.into())
+            .context("Failed to bind SSDP listen socket")?;
+
+        socket.set_nonblocking(true)
+            .context("Failed to set non-blocking on listen socket")?;
+
+        // Convert to tokio UdpSocket
+        let std_socket: std::net::UdpSocket = socket.into();
+        UdpSocket::from_std(std_socket)
+            .context("Failed to convert listen socket to tokio")?
+    };
+
+    // Create broadcast socket using socket2
+    let broadcast_socket = {
+        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
+            .context("Failed to create broadcast socket")?;
+
+        socket.set_reuse_address(true)
+            .context("Failed to set SO_REUSEADDR on broadcast socket")?;
+
+        #[cfg(target_os = "linux")]
+        socket.set_reuse_port(true)
+            .context("Failed to set SO_REUSEPORT on broadcast socket")?;
+
+        // Bind to ephemeral port for NOTIFY announcements
+        let addr = SocketAddrV4::new(BROADCAST_ADDRESS.0, BROADCAST_ADDRESS.1);
+        socket.bind(&addr.into())
+            .context("Failed to bind SSDP broadcast socket")?;
+
+        socket.set_nonblocking(true)
+            .context("Failed to set non-blocking on broadcast socket")?;
+
+        let std_socket: std::net::UdpSocket = socket.into();
+        UdpSocket::from_std(std_socket)
+            .context("Failed to convert broadcast socket to tokio")?
+    };
 
     if let Some(_iface) = broadcast_iface {
         #[cfg(any(target_os = "android", target_os = "linux"))]
