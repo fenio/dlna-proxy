@@ -12,7 +12,36 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  build-binaries:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            arch: amd64
+          - target: aarch64-unknown-linux-musl
+            arch: arm64
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Install cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build binary
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: dlnaproxy-${{ matrix.arch }}
+          path: target/${{ matrix.target }}/release/dlnaproxy
+
   build-and-push:
+    needs: build-binaries
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -21,6 +50,24 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Download amd64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: dlnaproxy-amd64
+          path: .
+
+      - name: Rename amd64 binary
+        run: mv dlnaproxy dlnaproxy-amd64
+
+      - name: Download arm64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: dlnaproxy-arm64
+          path: .
+
+      - name: Rename arm64 binary
+        run: mv dlnaproxy dlnaproxy-arm64
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -55,5 +102,3 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
