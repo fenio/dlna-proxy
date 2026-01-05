@@ -1,0 +1,28 @@
+# dlnaproxy configuration file
+#
+# Usage: dlnaproxy -c /path/to/config.toml
+
+# URL pointing to the remote DLNA server's root XML description (required)
+description_url = "http://192.168.1.100:8200/rootDesc.xml"
+
+# Interval (in seconds) at which we broadcast ssdp:alive on behalf of the remote server
+# Default: 895
+period = 895
+
+# Local IP:PORT where to bind the TCP proxy
+# When set, dlnaproxy will proxy TCP connections to the remote DLNA server
+# and rewrite the description_url to point to this proxy address
+# Optional - if not set, no proxy is started
+#proxy = "192.168.1.50:8200"
+
+# Network interface on which to broadcast SSDP messages
+# Requires root or CAP_NET_RAW capability
+# Optional - if not set, broadcasts on all interfaces
+#iface = "eth0"
+
+# Verbosity level:
+#   0 = Warn (default)
+#   1 = Info
+#   2 = Debug
+#   3+ = Trace
+verbose = 1
