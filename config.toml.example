@@ -1,6 +1,6 @@
-# dlnaproxy configuration file
+# dlna-proxy configuration file
 #
-# Usage: dlnaproxy -c /path/to/config.toml
+# Usage: dlna-proxy -c /path/to/config.toml
 
 # URL pointing to the remote DLNA server's root XML description (required)
 description_url = "http://192.168.1.100:8200/rootDesc.xml"
@@ -10,7 +10,7 @@ description_url = "http://192.168.1.100:8200/rootDesc.xml"
 period = 895
 
 # Local IP:PORT where to bind the TCP proxy
-# When set, dlnaproxy will proxy TCP connections to the remote DLNA server
+# When set, dlna-proxy will proxy TCP connections to the remote DLNA server
 # and rewrite the description_url to point to this proxy address
 # Optional - if not set, no proxy is started
 #proxy = "192.168.1.50:8200"

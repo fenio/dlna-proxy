@@ -1,12 +1,14 @@
-# dlnaproxy
+# dlna-proxy
 
-`dlnaproxy` enables the use of a DLNA server (e.g., MiniDLNA) past the local network boundary.
+This is a fork of [Nic0w/dlnaproxy](https://github.com/Nic0w/dlnaproxy).
+
+`dlna-proxy` enables the use of a DLNA server (e.g., MiniDLNA) past the local network boundary.
 
 ## Use case
 
 Let's say you're hosting a media library on a remote server. It might be because that remote server has more bandwidth, more storage, or both. It can also be your self-hosted NAS that you are trying to access from a remote location.
 
-If you're able to connect to that server, either through a VPN or because the machine is routed directly on the Internet, `dlnaproxy` will attempt to connect to that server and if successful, it will announce it on your current LAN as if that server were there.
+If you're able to connect to that server, either through a VPN or because the machine is routed directly on the Internet, `dlna-proxy` will attempt to connect to that server and if successful, it will announce it on your current LAN as if that server were there.
 
 ```
           Network boundary                 +------------------+
@@ -16,7 +18,7 @@ If you're able to connect to that server, either through a VPN or because the ma
      |          ||                         +---^--------------+
 +----v-----+    ||   +------------+            |
 | Remote   |    ||   |            +------------+
-| DLNA     <----++---+ dlnaproxy  |    broadcast
+| DLNA     <----++---+ dlna-proxy |    broadcast
 | Server   | fetch info           |
 |          |    ++   |            |
 +----------+    ||   +------------+
@@ -30,13 +32,13 @@ If you're able to connect to that server, either through a VPN or because the ma
 ### Docker (recommended)
 
 ```bash
-docker run --network host ghcr.io/fenio/dlnaproxy:main \
+docker run --network host ghcr.io/fenio/dlna-proxy:main \
   -u http://REMOTE_SERVER:PORT/rootDesc.xml -vv
 ```
 
 ### Binary
 
-Download the latest binary from [Releases](https://github.com/fenio/dlnaproxy/releases) or build from source:
+Download the latest binary from [Releases](https://github.com/fenio/dlna-proxy/releases) or build from source:
 
 ```bash
 cargo build --release
@@ -47,7 +49,7 @@ cargo build --release
 ### Command line
 
 ```bash
-dlnaproxy -u http://192.168.1.100:8200/rootDesc.xml -vv
+dlna-proxy -u http://192.168.1.100:8200/rootDesc.xml -vv
 ```
 
 ### With TCP proxy
@@ -55,7 +57,7 @@ dlnaproxy -u http://192.168.1.100:8200/rootDesc.xml -vv
 If the remote DLNA server is not directly accessible from clients on your LAN, use the proxy option:
 
 ```bash
-dlnaproxy -u http://REMOTE_SERVER:8200/rootDesc.xml -p LOCAL_IP:8200 -vv
+dlna-proxy -u http://REMOTE_SERVER:8200/rootDesc.xml -p LOCAL_IP:8200 -vv
 ```
 
 This binds a local TCP proxy that forwards connections to the remote server.
@@ -64,14 +66,15 @@ This binds a local TCP proxy that forwards connections to the remote server.
 
 ```
 Options:
-  -c, --config <FILE>           TOML config file
-  -u, --description-url <URL>   URL pointing to the remote DLNA server's root XML description
-  -d, --interval <SECONDS>      Broadcast interval in seconds (default: 895)
-  -p, --proxy <IP:PORT>         Local IP:PORT where to bind the TCP proxy
-  -i, --iface <IFACE>           Network interface to broadcast on (requires root or CAP_NET_RAW)
-  -v, --verbose...              Verbosity level (-v = info, -vv = debug, -vvv = trace)
-  -h, --help                    Print help
-  -V, --version                 Print version
+  -c, --config </path/to/config.conf>  TOML config file
+  -u, --description-url <URL>          URL pointing to the remote DLNA server's root XML description
+  -d, --interval <DURATION>            Interval at which we will check the remote server's presence
+                                       and broadcast on its behalf, in seconds (default: 895)
+  -p, --proxy <IP:PORT>                IP address & port where to bind proxy
+  -i, --iface <IFACE>                  Network interface on which to broadcast (requires root or CAP_NET_RAW)
+  -v, --verbose...                     Verbosity level (-v = info, -vv = debug, -vvv = trace)
+  -h, --help                           Print help
+  -V, --version                        Print version
 ```
 
 ### Config file
@@ -79,7 +82,7 @@ Options:
 Instead of command line arguments, you can use a TOML config file:
 
 ```bash
-dlnaproxy -c /path/to/config.toml
+dlna-proxy -c /path/to/config.toml
 ```
 
 Example config (`config.toml.example`):
@@ -88,16 +91,26 @@ Example config (`config.toml.example`):
 # URL pointing to the remote DLNA server's root XML description (required)
 description_url = "http://192.168.1.100:8200/rootDesc.xml"
 
-# Broadcast interval in seconds (default: 895)
+# Interval (in seconds) at which we broadcast ssdp:alive on behalf of the remote server
+# Default: 895
 period = 895
 
-# Local IP:PORT for TCP proxy (optional)
+# Local IP:PORT where to bind the TCP proxy
+# When set, dlna-proxy will proxy TCP connections to the remote DLNA server
+# and rewrite the description_url to point to this proxy address
+# Optional - if not set, no proxy is started
 #proxy = "192.168.1.50:8200"
 
-# Network interface to broadcast on (optional, requires root or CAP_NET_RAW)
+# Network interface on which to broadcast SSDP messages
+# Requires root or CAP_NET_RAW capability
+# Optional - if not set, broadcasts on all interfaces
 #iface = "eth0"
 
-# Verbosity: 0=warn, 1=info, 2=debug, 3+=trace
+# Verbosity level:
+#   0 = Warn (default)
+#   1 = Info
+#   2 = Debug
+#   3+ = Trace
 verbose = 1
 ```
 
@@ -106,13 +119,13 @@ verbose = 1
 ### Pull the image
 
 ```bash
-docker pull ghcr.io/fenio/dlnaproxy:main
+docker pull ghcr.io/fenio/dlna-proxy:main
 ```
 
 ### Run with command line arguments
 
 ```bash
-docker run --network host ghcr.io/fenio/dlnaproxy:main \
+docker run --network host ghcr.io/fenio/dlna-proxy:main \
   -u http://192.168.1.100:8200/rootDesc.xml \
   -p 192.168.1.50:8200 \
   -d 30 \
@@ -125,15 +138,15 @@ docker run --network host ghcr.io/fenio/dlnaproxy:main \
 ```bash
 docker run --network host \
   -v /path/to/config.toml:/config.toml \
-  ghcr.io/fenio/dlnaproxy:main -c /config.toml
+  ghcr.io/fenio/dlna-proxy:main -c /config.toml
 ```
 
 ### Docker Compose
 
 ```yaml
 services:
-  dlnaproxy:
-    image: ghcr.io/fenio/dlnaproxy:main
+  dlna-proxy:
+    image: ghcr.io/fenio/dlna-proxy:main
     network_mode: host
     restart: unless-stopped
     command: -u http://192.168.1.100:8200/rootDesc.xml -vv
