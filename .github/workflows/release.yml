@@ -17,21 +17,33 @@ jobs:
         include:
           - target: x86_64-unknown-linux-musl
             artifact_name: dlnaproxy-linux-amd64
+            use_nightly: false
           - target: aarch64-unknown-linux-musl
             artifact_name: dlnaproxy-linux-arm64
+            use_nightly: false
           - target: mips-unknown-linux-musl
             artifact_name: dlnaproxy-linux-mips
+            use_nightly: true
           - target: mipsel-unknown-linux-musl
             artifact_name: dlnaproxy-linux-mipsel
+            use_nightly: true
           - target: armv7-unknown-linux-musleabihf
             artifact_name: dlnaproxy-linux-armv7l
+            use_nightly: false
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Rust
+      - name: Install Rust (stable)
+        if: ${{ !matrix.use_nightly }}
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Rust (nightly)
+        if: ${{ matrix.use_nightly }}
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
 
       - name: Install cross
         run: cargo install cross --git https://github.com/cross-rs/cross
