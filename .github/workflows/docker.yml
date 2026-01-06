@@ -23,7 +23,7 @@ jobs:
             arch: arm64
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -35,10 +35,10 @@ jobs:
         run: cross build --release --target ${{ matrix.target }}
 
       - name: Upload binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
-          name: dlnaproxy-${{ matrix.arch }}
-          path: target/${{ matrix.target }}/release/dlnaproxy
+          name: dlna-proxy-${{ matrix.arch }}
+          path: target/${{ matrix.target }}/release/dlna-proxy
 
   build-and-push:
     needs: build-binaries
@@ -49,25 +49,25 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download amd64 binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
-          name: dlnaproxy-amd64
+          name: dlna-proxy-amd64
           path: .
 
       - name: Rename amd64 binary
-        run: mv dlnaproxy dlnaproxy-amd64
+        run: mv dlna-proxy dlna-proxy-amd64
 
       - name: Download arm64 binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
-          name: dlnaproxy-arm64
+          name: dlna-proxy-arm64
           path: .
 
       - name: Rename arm64 binary
-        run: mv dlnaproxy dlnaproxy-arm64
+        run: mv dlna-proxy dlna-proxy-arm64
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
