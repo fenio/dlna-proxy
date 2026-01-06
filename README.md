@@ -157,6 +157,10 @@ services:
 - `--network host` is required for SSDP multicast to work properly
 - If using `-i` (interface binding), add `--cap-add=NET_RAW` or run privileged
 
+## Home Assistant Add-on
+
+`dlna-proxy` is also available as a Home Assistant add-on. Visit the [ha-addons repository](https://github.com/fenio/ha-addons) for installation instructions.
+
 ## Building
 
 ### Native build

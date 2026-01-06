@@ -1,10 +1,15 @@
 [package]
 name = "dlna-proxy"
 version = "0.4.0"
-authors = ["Nic0w"]
+authors = ["Nic0w", "Bartosz Fenski <fenio@debian.org>"]
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+description = "A DLNA proxy that enables use of a DLNA server past the local network boundary"
+license = "GPL-3.0"
+repository = "https://github.com/fenio/dlna-proxy"
+homepage = "https://github.com/fenio/dlna-proxy"
+readme = "README.md"
+keywords = ["dlna", "upnp", "ssdp", "proxy", "media"]
+categories = ["network-programming", "multimedia"]
 [profile.release]
 lto = true
 strip = true
