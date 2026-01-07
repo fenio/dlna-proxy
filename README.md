@@ -62,6 +62,20 @@ dlna-proxy -u http://REMOTE_SERVER:8200/rootDesc.xml -p LOCAL_IP:8200 -vv
 
 This binds a local TCP proxy that forwards connections to the remote server.
 
+### Wait for server availability
+
+If the remote server might not be available immediately (e.g., VPN not yet connected at boot), use the wait option:
+
+```bash
+dlna-proxy -u http://REMOTE_SERVER:8200/rootDesc.xml -w -vv
+```
+
+This will retry connecting every 30 seconds until the server becomes available. You can specify a custom retry interval:
+
+```bash
+dlna-proxy -u http://REMOTE_SERVER:8200/rootDesc.xml -w 10 -vv
+```
+
 ### All options
 
 ```
@@ -72,6 +86,11 @@ Options:
                                        and broadcast on its behalf, in seconds (default: 895)
   -p, --proxy <IP:PORT>                IP address & port where to bind proxy
   -i, --iface <IFACE>                  Network interface on which to broadcast (requires root or CAP_NET_RAW)
+  -w, --wait [<SECONDS>]               Wait for remote server to become available at startup.
+                                       Retries every SECONDS (default: 30)
+      --connect-timeout <SECONDS>      HTTP connect timeout for fetching XML description (default: 2)
+      --proxy-timeout <SECONDS>        TCP connect timeout for proxy connections to origin (default: 10)
+      --stream-timeout <SECONDS>       TCP read/write timeout for active proxy streams (default: 300)
   -v, --verbose...                     Verbosity level (-v = info, -vv = debug, -vvv = trace)
   -h, --help                           Print help
   -V, --version                        Print version
@@ -105,6 +124,25 @@ period = 895
 # Requires root or CAP_NET_RAW capability
 # Optional - if not set, broadcasts on all interfaces
 #iface = "eth0"
+
+# Wait for remote server to become available at startup
+# Value is the retry interval in seconds
+# Optional - if not set, dlna-proxy will exit if the server is unavailable at startup
+#wait = 30
+
+# HTTP connect timeout (in seconds) for fetching XML description from remote server
+# Default: 2
+#connect_timeout = 2
+
+# TCP connect timeout (in seconds) for proxy connections to origin server
+# Only applies when proxy is enabled
+# Default: 10
+#proxy_timeout = 10
+
+# TCP read/write timeout (in seconds) for active proxy streams
+# Only applies when proxy is enabled
+# Default: 300 (5 minutes)
+#stream_timeout = 300
 
 # Verbosity level:
 #   0 = Warn (default)
