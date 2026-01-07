@@ -17,6 +17,10 @@ struct RawConfig {
     proxy: Option<String>,
     verbose: Option<u8>,
     iface: Option<String>,
+    wait: Option<u64>,
+    connect_timeout: Option<u64>,
+    proxy_timeout: Option<u64>,
+    stream_timeout: Option<u64>,
 }
 
 pub struct Config {
@@ -25,6 +29,10 @@ pub struct Config {
     pub proxy: Option<SocketAddr>,
     pub broadcast_iface: Option<String>,
     pub verbose: log::LevelFilter,
+    pub wait: Option<time::Duration>,
+    pub connect_timeout: time::Duration,
+    pub proxy_timeout: time::Duration,
+    pub stream_timeout: time::Duration,
 }
 
 impl TryFrom<CommandLineConf> for Config {
@@ -43,42 +51,59 @@ fn get_config(args: CommandLineConf) -> Result<Config> {
         .map(|file| fs::read_to_string(file).context("Could not open/read config file."))
         .transpose()?;
 
-    let (description_url, period, proxy, broadcast_iface, verbose) =
-        if let Some(config_file) = config_as_file {
-            let raw_config: RawConfig =
-                toml::from_str(&config_file).context("failed to parse config file.")?;
+    let (
+        description_url,
+        period,
+        proxy,
+        broadcast_iface,
+        verbose,
+        wait,
+        connect_timeout,
+        proxy_timeout,
+        stream_timeout,
+    ) = if let Some(config_file) = config_as_file {
+        let raw_config: RawConfig =
+            toml::from_str(&config_file).context("failed to parse config file.")?;
 
-            let desc_url = raw_config
-                .description_url
-                .ok_or(anyhow!("Missing description URL"))
-                .and_then(|s| Url::parse(&s).context("Bad description URL."))?;
+        let desc_url = raw_config
+            .description_url
+            .ok_or(anyhow!("Missing description URL"))
+            .and_then(|s| Url::parse(&s).context("Bad description URL."))?;
 
-            let period = raw_config.period;
+        let period = raw_config.period;
 
-            let proxy: Option<SocketAddr> = raw_config
-                .proxy
-                .as_deref()
-                .map(str::parse)
-                .transpose()
-                .context("Bad proxy address")?;
+        let proxy: Option<SocketAddr> = raw_config
+            .proxy
+            .as_deref()
+            .map(str::parse)
+            .transpose()
+            .context("Bad proxy address")?;
 
-            (
-                desc_url,
-                period,
-                proxy,
-                raw_config.iface,
-                raw_config.verbose,
-            )
-        } else {
-            (
-                args.description_url
-                    .ok_or(anyhow!("Missing description URL"))?,
-                args.interval,
-                args.proxy,
-                args.iface,
-                Some(args.verbose),
-            )
-        };
+        (
+            desc_url,
+            period,
+            proxy,
+            raw_config.iface,
+            raw_config.verbose,
+            raw_config.wait,
+            raw_config.connect_timeout,
+            raw_config.proxy_timeout,
+            raw_config.stream_timeout,
+        )
+    } else {
+        (
+            args.description_url
+                .ok_or(anyhow!("Missing description URL"))?,
+            args.interval,
+            args.proxy,
+            args.iface,
+            Some(args.verbose),
+            args.wait,
+            args.connect_timeout,
+            args.proxy_timeout,
+            args.stream_timeout,
+        )
+    };
 
     let period = period.or(Some(895)).map(time::Duration::from_secs).unwrap();
 
@@ -89,12 +114,34 @@ fn get_config(args: CommandLineConf) -> Result<Config> {
         _ => log::LevelFilter::Trace,
     });
 
+    // Default: 30 seconds retry interval when waiting
+    let wait = wait.map(time::Duration::from_secs);
+
+    // Default: 2 seconds HTTP connect timeout
+    let connect_timeout = connect_timeout
+        .map(time::Duration::from_secs)
+        .unwrap_or(time::Duration::from_secs(2));
+
+    // Default: 10 seconds TCP proxy connect timeout
+    let proxy_timeout = proxy_timeout
+        .map(time::Duration::from_secs)
+        .unwrap_or(time::Duration::from_secs(10));
+
+    // Default: 300 seconds (5 minutes) TCP stream read/write timeout
+    let stream_timeout = stream_timeout
+        .map(time::Duration::from_secs)
+        .unwrap_or(time::Duration::from_secs(300));
+
     Ok(Config {
         description_url,
         proxy,
         period,
         broadcast_iface,
         verbose,
+        wait,
+        connect_timeout,
+        proxy_timeout,
+        stream_timeout,
     })
 }
 

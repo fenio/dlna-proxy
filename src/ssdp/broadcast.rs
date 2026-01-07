@@ -40,8 +40,8 @@ pub async fn broadcast_task(broadcaster: Arc<SSDPBroadcast>, period: Duration) {
 
     loop {
         if let Err(msg) = broadcaster.do_ssdp_alive().await {
-            warn!(target: "dlnaproxy", "Couldn't send ssdp:alive: {}", msg);
-            break;
+            warn!(target: "dlnaproxy", "Couldn't send ssdp:alive: {}. Will retry next interval.", msg);
+            // Continue instead of break - origin may come back online
         } else {
             info!(target: "dlnaproxy", "Broadcasted on local SSDP channel!");
         }
