@@ -1,6 +1,6 @@
 [package]
 name = "dlna-proxy"
-version = "0.4.0"
+version = "0.4.1"
 authors = ["Nic0w", "Bartosz Fenski <fenio@debian.org>"]
 edition = "2021"
 description = "A DLNA proxy that enables use of a DLNA server past the local network boundary"
