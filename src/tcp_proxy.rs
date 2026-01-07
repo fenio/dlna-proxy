@@ -10,13 +10,19 @@ use std::{
 
 //Adapted from https://github.com/hishboy/rust-tcp-proxy/
 
-// Connection timeout for establishing new connections to origin
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-// Read/write timeout for stream operations
-const STREAM_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
+pub struct TCPProxy {
+    connect_timeout: Duration,
+    stream_timeout: Duration,
+}
 
-pub struct TCPProxy;
 impl TCPProxy {
+    pub fn new(connect_timeout: Duration, stream_timeout: Duration) -> Self {
+        TCPProxy {
+            connect_timeout,
+            stream_timeout,
+        }
+    }
+
     pub fn start(self, to: SocketAddr, from: SocketAddr) -> JoinHandle<()> {
         let listener = TcpListener::bind(from).expect("Unable to bind proxy addr");
 
@@ -25,7 +31,10 @@ impl TCPProxy {
         thread::spawn(self.listen_loop(listener, to))
     }
 
-    fn listen_loop(&self, listener: TcpListener, origin: SocketAddr) -> impl FnOnce() {
+    fn listen_loop(self, listener: TcpListener, origin: SocketAddr) -> impl FnOnce() {
+        let connect_timeout = self.connect_timeout;
+        let stream_timeout = self.stream_timeout;
+
         move || {
             for incoming_stream in listener.incoming() {
                 let proxied_stream = match incoming_stream {
@@ -45,15 +54,15 @@ impl TCPProxy {
                 };
 
                 // Set timeouts on the incoming stream
-                if let Err(e) = proxied_stream.set_read_timeout(Some(STREAM_TIMEOUT)) {
+                if let Err(e) = proxied_stream.set_read_timeout(Some(stream_timeout)) {
                     warn!(target: "dlnaproxy", "Failed to set read timeout: {}", e);
                 }
-                if let Err(e) = proxied_stream.set_write_timeout(Some(STREAM_TIMEOUT)) {
+                if let Err(e) = proxied_stream.set_write_timeout(Some(stream_timeout)) {
                     warn!(target: "dlnaproxy", "Failed to set write timeout: {}", e);
                 }
 
                 // Connect to origin with timeout
-                let to_stream = match TcpStream::connect_timeout(&origin, CONNECT_TIMEOUT) {
+                let to_stream = match TcpStream::connect_timeout(&origin, connect_timeout) {
                     Ok(stream) => stream,
                     Err(e) => {
                         warn!(target: "dlnaproxy", "Failed to connect to origin {}: {}", origin, e);
@@ -62,10 +71,10 @@ impl TCPProxy {
                 };
 
                 // Set timeouts on the origin stream
-                if let Err(e) = to_stream.set_read_timeout(Some(STREAM_TIMEOUT)) {
+                if let Err(e) = to_stream.set_read_timeout(Some(stream_timeout)) {
                     warn!(target: "dlnaproxy", "Failed to set read timeout on origin: {}", e);
                 }
-                if let Err(e) = to_stream.set_write_timeout(Some(STREAM_TIMEOUT)) {
+                if let Err(e) = to_stream.set_write_timeout(Some(stream_timeout)) {
                     warn!(target: "dlnaproxy", "Failed to set write timeout on origin: {}", e);
                 }
 

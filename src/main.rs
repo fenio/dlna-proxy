@@ -2,7 +2,7 @@ mod config;
 mod ssdp;
 mod tcp_proxy;
 
-use std::{net::SocketAddr, path::PathBuf, time};
+use std::{net::SocketAddr, path::PathBuf};
 
 use config::Config;
 
@@ -10,7 +10,7 @@ use reqwest::Url;
 
 use anyhow::Result;
 use clap::{ArgAction, Parser};
-use log::{debug, trace};
+use log::{debug, info, trace, warn};
 use ssdp::main_task;
 
 use crate::ssdp::SSDPManager;
@@ -40,6 +40,22 @@ struct CommandLineConf {
     #[clap(short, long, value_name = "IFACE")]
     iface: Option<String>,
 
+    /// Wait for remote server to become available at startup. Retries every SECONDS (default: 30).
+    #[clap(short = 'w', long, value_name = "SECONDS", default_missing_value = "30", num_args = 0..=1)]
+    wait: Option<u64>,
+
+    /// HTTP connect timeout for fetching XML description, in seconds.
+    #[clap(long, value_name = "SECONDS")]
+    connect_timeout: Option<u64>,
+
+    /// TCP connect timeout for proxy connections to origin, in seconds.
+    #[clap(long, value_name = "SECONDS")]
+    proxy_timeout: Option<u64>,
+
+    /// TCP read/write timeout for active proxy streams, in seconds.
+    #[clap(long, value_name = "SECONDS")]
+    stream_timeout: Option<u64>,
+
     /// Verbosity level. The more v, the more verbose.
     #[clap(short, long, action=ArgAction::Count)]
     verbose: u8,
@@ -61,7 +77,7 @@ async fn main() -> Result<()> {
         url.set_ip_host(proxy_addr.ip()).unwrap();
         url.set_port(Some(proxy_addr.port())).unwrap();
 
-        let proxy = TCPProxy;
+        let proxy = TCPProxy::new(config.proxy_timeout, config.stream_timeout);
 
         trace!(target: "dlnaproxy", "server: {}", server_addr);
 
@@ -72,14 +88,36 @@ async fn main() -> Result<()> {
 
     debug!(target: "dlnaproxy", "Desc URL: '{}', interval: {}s, verbosity: {}", url, config.period.as_secs(), config.verbose);
 
-    let timeout = time::Duration::from_secs(2);
-    let ssdp = SSDPManager::new(
-        url.as_str(),
-        config.period,
-        Some(timeout),
-        config.broadcast_iface,
-    )
-    .await?;
+    // Wait for origin server to become available if --wait is specified
+    let ssdp = if let Some(wait_interval) = config.wait {
+        loop {
+            match SSDPManager::new(
+                url.as_str(),
+                config.period,
+                Some(config.connect_timeout),
+                config.broadcast_iface.clone(),
+            )
+            .await
+            {
+                Ok(ssdp) => {
+                    info!(target: "dlnaproxy", "Origin server is available, starting...");
+                    break ssdp;
+                }
+                Err(e) => {
+                    warn!(target: "dlnaproxy", "Origin server not available: {}. Retrying in {}s...", e, wait_interval.as_secs());
+                    tokio::time::sleep(wait_interval).await;
+                }
+            }
+        }
+    } else {
+        SSDPManager::new(
+            url.as_str(),
+            config.period,
+            Some(config.connect_timeout),
+            config.broadcast_iface,
+        )
+        .await?
+    };
 
     let handle = tokio::spawn(main_task(ssdp));
 
