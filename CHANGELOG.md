@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 This project is a fork of [Nic0w/dlnaproxy](https://github.com/Nic0w/dlnaproxy).
 
+## [0.4.2] - 2025-01-08
+
+### Fixed
+
+- **Wait mode now works with non-existent servers**: With `-w/--wait`, dlna-proxy now starts immediately even if the origin server doesn't exist yet. It will keep retrying on each broadcast interval until the server appears. Previously it would fail at startup.
+
 ## [0.4.1] - 2025-01-07
 
 ### Added
