@@ -10,7 +10,7 @@ use reqwest::Url;
 
 use anyhow::Result;
 use clap::{ArgAction, Parser};
-use log::{debug, info, trace, warn};
+use log::{debug, trace};
 use ssdp::main_task;
 
 use crate::ssdp::SSDPManager;
@@ -88,38 +88,17 @@ async fn main() -> Result<()> {
 
     debug!(target: "dlnaproxy", "Desc URL: '{}', interval: {}s, verbosity: {}", url, config.period.as_secs(), config.verbose);
 
-    // Wait for origin server to become available if --wait is specified
-    let ssdp = if let Some(wait_interval) = config.wait {
-        loop {
-            match SSDPManager::new(
-                url.as_str(),
-                config.period,
-                Some(config.connect_timeout),
-                config.broadcast_iface.clone(),
-            )
-            .await
-            {
-                Ok(ssdp) => {
-                    info!(target: "dlnaproxy", "Origin server is available, starting...");
-                    break ssdp;
-                }
-                Err(e) => {
-                    warn!(target: "dlnaproxy", "Origin server not available: {}. Retrying in {}s...", e, wait_interval.as_secs());
-                    tokio::time::sleep(wait_interval).await;
-                }
-            }
-        }
-    } else {
-        SSDPManager::new(
-            url.as_str(),
-            config.period,
-            Some(config.connect_timeout),
-            config.broadcast_iface,
-        )
-        .await?
-    };
+    let wait_mode = config.wait.is_some();
 
-    let handle = tokio::spawn(main_task(ssdp));
+    let ssdp = SSDPManager::new(
+        url.as_str(),
+        config.period,
+        Some(config.connect_timeout),
+        config.broadcast_iface,
+    )
+    .await?;
+
+    let handle = tokio::spawn(main_task(ssdp, wait_mode));
 
     let _ = handle.await;
 

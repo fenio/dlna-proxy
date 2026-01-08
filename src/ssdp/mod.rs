@@ -4,7 +4,7 @@ use socket2::{Domain, Protocol, Socket, Type};
 
 use anyhow::{Context, Result};
 
-use log::info;
+use log::{info, warn};
 
 #[cfg(any(target_os = "android", target_os = "linux"))]
 use std::os::fd::AsFd as _;
@@ -162,15 +162,22 @@ async fn ssdp_sockets(broadcast_iface: Option<String>) -> Result<(Arc<UdpSocket>
     Ok((Arc::new(listen_socket), Arc::new(broadcast_socket)))
 }
 
-pub async fn main_task(ssdp: SSDPManager) -> Result<()> {
+pub async fn main_task(ssdp: SSDPManager, wait_mode: bool) -> Result<()> {
     info!(target: "dlnaproxy", "Launched main task...");
 
-    //We send an initial byebye before all else because... that's how MiniDLNA does it.
-    //Guessing that it's for clearing any cache that might exist on listening remote devices.
-    ssdp.interactive_ssdp
-        .send_byebye(&ssdp.broadcast_socket, SSDP_ADDRESS)
-        .await
-        .context("Failed to send initial ssdp:byebye !")?;
+    // Send initial byebye to clear any cache on listening devices.
+    // Skip this in wait mode since server may not be available yet -
+    // the broadcast loop will handle retries.
+    if wait_mode {
+        info!(target: "dlnaproxy", "Wait mode enabled, skipping initial ssdp:byebye");
+    } else {
+        if let Err(e) = ssdp.interactive_ssdp
+            .send_byebye(&ssdp.broadcast_socket, SSDP_ADDRESS)
+            .await
+        {
+            warn!(target: "dlnaproxy", "Failed to send initial ssdp:byebye: {}", e);
+        }
+    }
 
     let _broadcast_handle =
         tokio::task::spawn(broadcast_task(ssdp.broadcaster, ssdp.broadcast_period));
