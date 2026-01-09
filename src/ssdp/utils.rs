@@ -82,7 +82,7 @@ impl InteractiveSSDP {
         ssdp_packet: SSDPPacket,
         p_type: &str,
     ) -> Result<()> {
-        trace!(target: "dlnaproxy", "{}", ssdp_packet.to_string());
+        trace!(target: "dlnaproxy", "{}", ssdp_packet);
 
         ssdp_packet.send_to(socket, dest).await?;
 

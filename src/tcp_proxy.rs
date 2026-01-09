@@ -259,10 +259,10 @@ fn proxy_response_with_rewrite(
             }
 
             // Check for Transfer-Encoding: chunked
-            if line_str.to_lowercase().starts_with("transfer-encoding:") {
-                if line_str.to_lowercase().contains("chunked") {
-                    is_chunked = true;
-                }
+            if line_str.to_lowercase().starts_with("transfer-encoding:")
+                && line_str.to_lowercase().contains("chunked")
+            {
+                is_chunked = true;
             }
 
             header_buf.extend_from_slice(&line);

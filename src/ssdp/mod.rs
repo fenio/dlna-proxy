@@ -1,6 +1,10 @@
-use std::{net::{Ipv4Addr, SocketAddrV4}, sync::Arc, time::Duration};
-use tokio::net::UdpSocket;
 use socket2::{Domain, Protocol, Socket, Type};
+use std::{
+    net::{Ipv4Addr, SocketAddrV4},
+    sync::Arc,
+    time::Duration,
+};
+use tokio::net::UdpSocket;
 
 use anyhow::{Context, Result};
 
@@ -69,7 +73,10 @@ impl SSDPManager {
             cache_max_age,
         ));
 
-        let broadcaster = Arc::new(SSDPBroadcast::new(broadcast_socket.clone(), interactive_ssdp.clone()));
+        let broadcaster = Arc::new(SSDPBroadcast::new(
+            broadcast_socket.clone(),
+            interactive_ssdp.clone(),
+        ));
 
         Ok(SSDPManager {
             broadcast_period,
@@ -88,26 +95,29 @@ async fn ssdp_sockets(broadcast_iface: Option<String>) -> Result<(Arc<UdpSocket>
             .context("Failed to create listen socket")?;
 
         // Set SO_REUSEADDR before binding - allows multiple processes to bind to the same port
-        socket.set_reuse_address(true)
+        socket
+            .set_reuse_address(true)
             .context("Failed to set SO_REUSEADDR on listen socket")?;
 
         // On Linux, also set SO_REUSEPORT for multicast
         #[cfg(target_os = "linux")]
-        socket.set_reuse_port(true)
+        socket
+            .set_reuse_port(true)
             .context("Failed to set SO_REUSEPORT on listen socket")?;
 
         // Bind to port 1900 for M-SEARCH queries
         let addr = SocketAddrV4::new(LISTEN_ADDRESS.0, LISTEN_ADDRESS.1);
-        socket.bind(&addr.into())
+        socket
+            .bind(&addr.into())
             .context("Failed to bind SSDP listen socket")?;
 
-        socket.set_nonblocking(true)
+        socket
+            .set_nonblocking(true)
             .context("Failed to set non-blocking on listen socket")?;
 
         // Convert to tokio UdpSocket
         let std_socket: std::net::UdpSocket = socket.into();
-        UdpSocket::from_std(std_socket)
-            .context("Failed to convert listen socket to tokio")?
+        UdpSocket::from_std(std_socket).context("Failed to convert listen socket to tokio")?
     };
 
     // Create broadcast socket using socket2
@@ -115,24 +125,27 @@ async fn ssdp_sockets(broadcast_iface: Option<String>) -> Result<(Arc<UdpSocket>
         let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
             .context("Failed to create broadcast socket")?;
 
-        socket.set_reuse_address(true)
+        socket
+            .set_reuse_address(true)
             .context("Failed to set SO_REUSEADDR on broadcast socket")?;
 
         #[cfg(target_os = "linux")]
-        socket.set_reuse_port(true)
+        socket
+            .set_reuse_port(true)
             .context("Failed to set SO_REUSEPORT on broadcast socket")?;
 
         // Bind to ephemeral port for NOTIFY announcements
         let addr = SocketAddrV4::new(BROADCAST_ADDRESS.0, BROADCAST_ADDRESS.1);
-        socket.bind(&addr.into())
+        socket
+            .bind(&addr.into())
             .context("Failed to bind SSDP broadcast socket")?;
 
-        socket.set_nonblocking(true)
+        socket
+            .set_nonblocking(true)
             .context("Failed to set non-blocking on broadcast socket")?;
 
         let std_socket: std::net::UdpSocket = socket.into();
-        UdpSocket::from_std(std_socket)
-            .context("Failed to convert broadcast socket to tokio")?
+        UdpSocket::from_std(std_socket).context("Failed to convert broadcast socket to tokio")?
     };
 
     if let Some(_iface) = broadcast_iface {
@@ -170,21 +183,22 @@ pub async fn main_task(ssdp: SSDPManager, wait_mode: bool) -> Result<()> {
     // the broadcast loop will handle retries.
     if wait_mode {
         info!(target: "dlnaproxy", "Wait mode enabled, skipping initial ssdp:byebye");
-    } else {
-        if let Err(e) = ssdp.interactive_ssdp
-            .send_byebye(&ssdp.broadcast_socket, SSDP_ADDRESS)
-            .await
-        {
-            warn!(target: "dlnaproxy", "Failed to send initial ssdp:byebye: {}", e);
-        }
+    } else if let Err(e) = ssdp
+        .interactive_ssdp
+        .send_byebye(&ssdp.broadcast_socket, SSDP_ADDRESS)
+        .await
+    {
+        warn!(target: "dlnaproxy", "Failed to send initial ssdp:byebye: {}", e);
     }
 
     let _broadcast_handle =
         tokio::task::spawn(broadcast_task(ssdp.broadcaster, ssdp.broadcast_period));
 
     // Listen task uses the socket bound to port 1900 to receive M-SEARCH queries
-    let _listener_handle =
-        tokio::task::spawn(listen_task(ssdp.listen_socket, ssdp.interactive_ssdp.clone()));
+    let _listener_handle = tokio::task::spawn(listen_task(
+        ssdp.listen_socket,
+        ssdp.interactive_ssdp.clone(),
+    ));
 
     let _ = _listener_handle.await;
 
