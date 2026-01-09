@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 This project is a fork of [Nic0w/dlnaproxy](https://github.com/Nic0w/dlnaproxy).
 
+## [0.4.6] - 2026-01-09
+
+### Fixed
+
+- **TCP proxy: use raw byte parsing for HTTP headers and chunked encoding**: All line-based parsing in the TCP proxy now uses raw bytes instead of requiring valid UTF-8. This fixes "stream did not contain valid UTF-8" errors that occurred when DVB streamers or other servers sent responses with non-standard encoding in headers or chunked transfer framing.
+
 ## [0.4.5] - 2026-01-09
 
 ### Fixed

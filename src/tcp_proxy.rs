@@ -178,6 +178,33 @@ fn handle_conn(
     trace!(target: "dlnaproxy", "Closed connection with: {}", peer_addr);
 }
 
+/// Read a line (until \n) as raw bytes, without requiring valid UTF-8.
+/// This is essential for handling binary data that might appear in streams.
+fn read_line_bytes<R: BufRead>(reader: &mut R) -> io::Result<Vec<u8>> {
+    let mut line = Vec::new();
+    reader.read_until(b'\n', &mut line)?;
+    Ok(line)
+}
+
+/// Parse a chunk size from raw bytes (ASCII hex digits)
+fn parse_chunk_size(line: &[u8]) -> io::Result<usize> {
+    // Find the end of the hex digits (ignore extensions after ';' and whitespace)
+    let hex_end = line
+        .iter()
+        .position(|&b| b == b';' || b == b'\r' || b == b'\n' || b == b' ')
+        .unwrap_or(line.len());
+
+    let hex_str = std::str::from_utf8(&line[..hex_end])
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid chunk size encoding"))?;
+
+    usize::from_str_radix(hex_str.trim(), 16).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Invalid chunk size '{}': {}", hex_str, e),
+        )
+    })
+}
+
 /// Check if Content-Type indicates text/XML content that should have URL rewriting
 fn should_rewrite_content(headers: &str) -> bool {
     let headers_lower = headers.to_lowercase();
@@ -213,33 +240,35 @@ fn proxy_response_with_rewrite(
         let mut content_length: Option<usize> = None;
         let mut is_chunked = false;
 
-        // Read headers line by line
+        // Read headers line by line (as raw bytes to handle non-UTF8 gracefully)
         loop {
-            let mut line = String::new();
-            let bytes_read = reader.read_line(&mut line)?;
-            if bytes_read == 0 {
+            let line = read_line_bytes(&mut reader)?;
+            if line.is_empty() {
                 // Connection closed
                 return Ok(());
             }
 
+            // Convert to string for header matching (lossy conversion is fine for headers)
+            let line_str = String::from_utf8_lossy(&line);
+
             // Check for Content-Length header
-            if line.to_lowercase().starts_with("content-length:") {
-                if let Some(len_str) = line.split(':').nth(1) {
+            if line_str.to_lowercase().starts_with("content-length:") {
+                if let Some(len_str) = line_str.split(':').nth(1) {
                     content_length = len_str.trim().parse().ok();
                 }
             }
 
             // Check for Transfer-Encoding: chunked
-            if line.to_lowercase().starts_with("transfer-encoding:") {
-                if line.to_lowercase().contains("chunked") {
+            if line_str.to_lowercase().starts_with("transfer-encoding:") {
+                if line_str.to_lowercase().contains("chunked") {
                     is_chunked = true;
                 }
             }
 
-            header_buf.extend_from_slice(line.as_bytes());
+            header_buf.extend_from_slice(&line);
 
-            // End of headers
-            if line == "\r\n" || line == "\n" {
+            // End of headers (check raw bytes for \r\n or \n)
+            if line == b"\r\n" || line == b"\n" {
                 break;
             }
         }
@@ -337,25 +366,21 @@ fn proxy_response_with_rewrite(
 /// Pass through chunked data without buffering the entire body
 fn pass_through_chunked<R: BufRead, W: Write>(reader: &mut R, writer: &mut W) -> io::Result<()> {
     loop {
-        // Read and forward chunk size line
-        let mut size_line = String::new();
-        reader.read_line(&mut size_line)?;
-        writer.write_all(size_line.as_bytes())?;
+        // Read chunk size line as raw bytes
+        let size_line = read_line_bytes(reader)?;
+        if size_line.is_empty() {
+            break;
+        }
+        writer.write_all(&size_line)?;
 
-        // Parse chunk size (hex)
-        let size_str = size_line.trim();
-        let chunk_size = usize::from_str_radix(size_str, 16).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("Invalid chunk size '{}': {}", size_str, e),
-            )
-        })?;
+        // Parse chunk size (hex) from raw bytes
+        let chunk_size = parse_chunk_size(&size_line)?;
 
         if chunk_size == 0 {
             // Read and forward trailing CRLF after last chunk
-            let mut trailer = String::new();
-            reader.read_line(&mut trailer)?;
-            writer.write_all(trailer.as_bytes())?;
+            let mut trailer = Vec::new();
+            reader.read_until(b'\n', &mut trailer)?;
+            writer.write_all(&trailer)?;
             break;
         }
 
@@ -386,23 +411,19 @@ fn read_chunked_body<R: BufRead>(reader: &mut R) -> io::Result<Vec<u8>> {
     let mut body = Vec::new();
 
     loop {
-        // Read chunk size line
-        let mut size_line = String::new();
-        reader.read_line(&mut size_line)?;
+        // Read chunk size line as raw bytes
+        let size_line = read_line_bytes(reader)?;
+        if size_line.is_empty() {
+            break;
+        }
 
-        // Parse chunk size (hex)
-        let size_str = size_line.trim();
-        let chunk_size = usize::from_str_radix(size_str, 16).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("Invalid chunk size '{}': {}", size_str, e),
-            )
-        })?;
+        // Parse chunk size (hex) from raw bytes
+        let chunk_size = parse_chunk_size(&size_line)?;
 
         if chunk_size == 0 {
             // Read trailing CRLF after last chunk
-            let mut trailer = String::new();
-            reader.read_line(&mut trailer)?;
+            let mut trailer = Vec::new();
+            reader.read_until(b'\n', &mut trailer)?;
             break;
         }
 
