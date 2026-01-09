@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 This project is a fork of [Nic0w/dlnaproxy](https://github.com/Nic0w/dlnaproxy).
 
+## [0.4.5] - 2026-01-09
+
+### Fixed
+
+- **TCP proxy: default to binary pass-through when Content-Type is missing**: Responses without a Content-Type header are now passed through unchanged instead of attempting URL rewriting. This fixes streaming from DVB and other servers that don't send Content-Type headers for media streams.
+
 ## [0.4.4] - 2026-01-09
 
 ### Fixed

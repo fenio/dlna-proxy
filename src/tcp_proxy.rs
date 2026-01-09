@@ -191,8 +191,10 @@ fn should_rewrite_content(headers: &str) -> bool {
                 || content_type.contains("html");
         }
     }
-    // If no Content-Type header, assume it might be text (for compatibility)
-    true
+    // If no Content-Type header, default to binary pass-through.
+    // DLNA text responses (XML) always have Content-Type headers,
+    // while media streams may omit them.
+    false
 }
 
 /// Proxy HTTP responses from origin to client, rewriting URLs in the body
