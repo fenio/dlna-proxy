@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 This project is a fork of [Nic0w/dlnaproxy](https://github.com/Nic0w/dlnaproxy).
 
+## [0.4.4] - 2026-01-09
+
+### Fixed
+
+- **TCP proxy now handles binary content correctly**: URL rewriting is now only performed on text/XML responses (based on Content-Type header). Binary content like images, videos, and other media files are passed through unchanged. This fixes the "stream did not contain valid UTF-8" errors when clients requested media files through the proxy.
+
 ## [0.4.2] - 2025-01-08
 
 ### Fixed
