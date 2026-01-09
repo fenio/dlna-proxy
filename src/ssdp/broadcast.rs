@@ -61,8 +61,12 @@ pub async fn ctrlc_handler(broadcaster: Arc<SSDPBroadcast>) -> Result<()> {
 
     debug!(target:"dlnaproxy", "SIGINT handler triggered, sending ssdp:bybye !");
 
-    if let Err(msg) = helper.send_byebye(&socket, SSDP_ADDRESS).await {
-        warn!(target: "dlnaproxy", "Failed to send ssdp:byebye: {}", msg);
+    // Use a timeout for the byebye message to ensure we exit promptly
+    let byebye_future = helper.send_byebye(&socket, SSDP_ADDRESS);
+    match time::timeout(Duration::from_secs(2), byebye_future).await {
+        Ok(Ok(())) => {}
+        Ok(Err(msg)) => warn!(target: "dlnaproxy", "Failed to send ssdp:byebye: {}", msg),
+        Err(_) => warn!(target: "dlnaproxy", "Timeout sending ssdp:byebye"),
     }
 
     info!(target: "dlnaproxy", "Exiting !");

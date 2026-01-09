@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 This project is a fork of [Nic0w/dlnaproxy](https://github.com/Nic0w/dlnaproxy).
 
+## [0.4.7] - 2026-01-09
+
+### Fixed
+
+- **TCP proxy: sanitize log output for non-HTTP data**: When non-HTTP data arrives (e.g., binary protocols), the log now filters control characters and truncates long lines to prevent garbage in logs.
+- **Ctrl+C exit reliability**: Added a 2-second timeout when sending ssdp:byebye on shutdown. Previously, if the network was slow or unresponsive, the byebye message could hang indefinitely preventing clean exit.
+
 ## [0.4.6] - 2026-01-09
 
 ### Fixed

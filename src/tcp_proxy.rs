@@ -279,7 +279,16 @@ fn proxy_response_with_rewrite(
         }
 
         let headers_str = String::from_utf8_lossy(&header_buf);
-        trace!(target: "dlnaproxy", "Response headers for {}: {}", peer_addr, headers_str.lines().next().unwrap_or(""));
+        // Only log the first line (status line), and sanitize it for display
+        let status_line = headers_str
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .filter(|c| !c.is_control() || *c == ' ')
+            .take(100) // Limit length to avoid log spam
+            .collect::<String>();
+        trace!(target: "dlnaproxy", "Response headers for {}: {}", peer_addr, status_line);
 
         // Check if this is text/XML content that needs URL rewriting
         let needs_rewrite = should_rewrite_content(&headers_str);
