@@ -27,6 +27,27 @@ If you're able to connect to that server, either through a VPN or because the ma
                 ++
 ```
 
+## How it works
+
+`dlna-proxy` operates in two modes:
+
+### Basic mode (SSDP broadcasting only)
+
+In basic mode, `dlna-proxy` periodically fetches the device description from the remote DLNA server and broadcasts SSDP `alive` messages on the local network. This announces the remote server's presence to local DLNA clients. Clients must be able to reach the remote server directly to stream content.
+
+### Proxy mode (with `-p` option)
+
+When the `-p` option is specified, `dlna-proxy` also starts a local TCP proxy. This mode is essential when the remote server is not directly reachable from clients (e.g., behind a VPN that only the proxy host can access).
+
+The TCP proxy does more than simple port forwarding - it acts as an **HTTP-aware intercepting proxy** that:
+
+1. **Forwards client requests** to the remote DLNA server unchanged
+2. **Intercepts HTTP responses** from the server
+3. **Rewrites URLs in response bodies** on the fly, replacing the remote server's address with the local proxy address
+4. **Adjusts Content-Length headers** when URL rewriting changes the response size
+
+This URL rewriting is critical because DLNA servers embed their own URLs in XML descriptions, content directories, and other responses. Without rewriting, clients would receive URLs pointing to the unreachable remote server and fail to load content.
+
 ## Installation
 
 ### Docker (recommended)
@@ -60,7 +81,7 @@ If the remote DLNA server is not directly accessible from clients on your LAN, u
 dlna-proxy -u http://REMOTE_SERVER:8200/rootDesc.xml -p LOCAL_IP:8200 -vv
 ```
 
-This binds a local TCP proxy that forwards connections to the remote server.
+This binds a local TCP proxy that forwards connections to the remote server. The proxy intercepts HTTP responses and **rewrites URLs on the fly**, replacing references to the remote server with the local proxy address. This ensures that DLNA clients receive URLs they can actually reach, even when the original server URLs in XML descriptions and other responses would be inaccessible from the client's network.
 
 ### Wait for server availability
 

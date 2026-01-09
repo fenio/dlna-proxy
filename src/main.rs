@@ -77,7 +77,12 @@ async fn main() -> Result<()> {
         url.set_ip_host(proxy_addr.ip()).unwrap();
         url.set_port(Some(proxy_addr.port())).unwrap();
 
-        let proxy = TCPProxy::new(config.proxy_timeout, config.stream_timeout);
+        let proxy = TCPProxy::new(
+            config.proxy_timeout,
+            config.stream_timeout,
+            server_addr,
+            proxy_addr,
+        );
 
         trace!(target: "dlnaproxy", "server: {}", server_addr);
 
