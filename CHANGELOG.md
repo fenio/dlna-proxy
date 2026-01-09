@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 This project is a fork of [Nic0w/dlnaproxy](https://github.com/Nic0w/dlnaproxy).
 
+## [0.4.8] - 2026-01-09
+
+### Fixed
+
+- **TCP proxy: properly sanitize log output**: Fixed log sanitization to only allow ASCII printable characters. The previous fix still allowed UTF-8 replacement characters (�) to appear in logs when binary data was received.
+- **TCP proxy: handle streaming responses without Content-Length**: Responses without Content-Length and not chunked (common for live media streams) are now properly streamed until connection close. Previously, the proxy would loop back expecting another HTTP response, causing repeated log spam and incorrect handling.
+
 ## [0.4.7] - 2026-01-09
 
 ### Fixed

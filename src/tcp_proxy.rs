@@ -280,12 +280,14 @@ fn proxy_response_with_rewrite(
 
         let headers_str = String::from_utf8_lossy(&header_buf);
         // Only log the first line (status line), and sanitize it for display
+        // Use is_ascii_graphic() to only allow printable ASCII (0x21-0x7E) plus space
+        // This filters out control chars, UTF-8 replacement chars, and other non-ASCII
         let status_line = headers_str
             .lines()
             .next()
             .unwrap_or("")
             .chars()
-            .filter(|c| !c.is_control() || *c == ' ')
+            .filter(|c| c.is_ascii_graphic() || *c == ' ')
             .take(100) // Limit length to avoid log spam
             .collect::<String>();
         trace!(target: "dlnaproxy", "Response headers for {}: {}", peer_addr, status_line);
@@ -293,13 +295,16 @@ fn proxy_response_with_rewrite(
         // Check if this is text/XML content that needs URL rewriting
         let needs_rewrite = should_rewrite_content(&headers_str);
 
-        // Handle responses without body or with unknown length
+        // Handle responses without Content-Length and not chunked
+        // This is typically a streaming response - read until connection close
         if !is_chunked && content_length.is_none() {
-            // No Content-Length and not chunked - could be connection close or no body
-            // For HTTP/1.0 or responses without body (204, 304, etc.), just send headers
             client_write.write_all(&header_buf)?;
             client_write.flush()?;
-            continue;
+
+            // Stream remaining data until origin closes connection
+            let bytes_copied = io::copy(&mut reader, &mut client_write)?;
+            trace!(target: "dlnaproxy", "Streamed {} bytes for {} (no Content-Length)", bytes_copied, peer_addr);
+            return Ok(()); // Connection is done after streaming
         }
 
         // For binary content, pass through without modification
