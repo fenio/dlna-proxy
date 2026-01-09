@@ -59,7 +59,13 @@ docker run --network host ghcr.io/fenio/dlna-proxy:main \
 
 ### Binary
 
-Download the latest binary from [Releases](https://github.com/fenio/dlna-proxy/releases) or build from source:
+Download the latest binary from [Releases](https://github.com/fenio/dlna-proxy/releases) for your platform:
+
+- **Linux**: x86_64, ARM64, ARMv7, MIPS, MIPSel
+- **Windows**: x86, x86_64
+- **macOS**: Intel (x86_64), Apple Silicon (ARM64)
+
+Or build from source:
 
 ```bash
 cargo build --release
@@ -238,6 +244,30 @@ cargo build --release --target x86_64-unknown-linux-musl
 # For ARM64
 rustup target add aarch64-unknown-linux-musl
 cargo build --release --target aarch64-unknown-linux-musl
+```
+
+### Cross-compile for Windows
+
+```bash
+# For 64-bit Windows
+rustup target add x86_64-pc-windows-gnu
+cargo build --release --target x86_64-pc-windows-gnu
+
+# For 32-bit Windows
+rustup target add i686-pc-windows-gnu
+cargo build --release --target i686-pc-windows-gnu
+```
+
+### Build for macOS
+
+```bash
+# For Intel Macs
+rustup target add x86_64-apple-darwin
+cargo build --release --target x86_64-apple-darwin
+
+# For Apple Silicon (M1/M2/M3)
+rustup target add aarch64-apple-darwin
+cargo build --release --target aarch64-apple-darwin
 ```
 
 ## License
