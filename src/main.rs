@@ -16,6 +16,8 @@ use ssdp::main_task;
 use crate::ssdp::SSDPManager;
 use crate::tcp_proxy::TCPProxy;
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// Broadcast ssdp:alive messages on the local network's multicast SSDP channel on behalf of a remote DLNA server.
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -68,6 +70,8 @@ async fn main() -> Result<()> {
     let config = Config::try_from(args)?;
 
     init_logging(config.verbose);
+
+    println!("dlna-proxy v{}", VERSION);
 
     let mut url = config.description_url;
 
