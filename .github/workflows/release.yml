@@ -30,6 +30,9 @@ jobs:
           - target: armv7-unknown-linux-musleabihf
             artifact_name: dlna-proxy-linux-armv7l
             use_nightly: false
+          - target: i686-unknown-linux-musl
+            artifact_name: dlna-proxy-linux-x86
+            use_nightly: false
 
     steps:
       - name: Checkout repository
