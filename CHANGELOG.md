@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 This project is a fork of [Nic0w/dlnaproxy](https://github.com/Nic0w/dlnaproxy).
 
+## [0.5.0] - 2026-01-09
+
+### Added
+
+- **Windows and macOS build targets**: Binary releases now include Windows (64-bit and 32-bit) and macOS (Intel and Apple Silicon) builds in addition to Linux/MIPS targets.
+
+### Changed
+
+- **Updated all dependencies to latest versions**:
+  - `fern` 0.6.2 → 0.7.1
+  - `nix` 0.29.0 → 0.30.1
+  - `quick-xml` 0.36.2 → 0.38.4
+  - `thiserror` 1.0.x → 2.0.17
+  - `toml` 0.8.23 → 0.9.11 (TOML 1.1 spec support)
+  - `reqwest` 0.12.28 → 0.13.1
+  - `socket2` 0.5.10 → 0.6.1
+
+### Fixed
+
+- **TCP proxy: properly sanitize log output**: Fixed log sanitization to only allow ASCII printable characters. The previous fix still allowed UTF-8 replacement characters (�) to appear in logs when binary data was received.
+- **TCP proxy: handle streaming responses without Content-Length**: Responses without Content-Length and not chunked (common for live media streams) are now properly streamed until connection close. Previously, the proxy would loop back expecting another HTTP response, causing repeated log spam and incorrect handling.
+- **Code quality**: Fixed all Clippy warnings and applied consistent rustfmt formatting.
+
 ## [0.4.8] - 2026-01-09
 
 ### Fixed
