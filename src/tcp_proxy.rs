@@ -480,3 +480,393 @@ fn update_content_length(headers: &str, new_length: usize) -> String {
 
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    // ============================================
+    // parse_chunk_size() tests
+    // ============================================
+
+    #[test]
+    fn test_parse_chunk_size_zero() {
+        assert_eq!(parse_chunk_size(b"0\r\n").unwrap(), 0);
+    }
+
+    #[test]
+    fn test_parse_chunk_size_single_digit() {
+        assert_eq!(parse_chunk_size(b"a\r\n").unwrap(), 10);
+        assert_eq!(parse_chunk_size(b"f\r\n").unwrap(), 15);
+        assert_eq!(parse_chunk_size(b"5\r\n").unwrap(), 5);
+    }
+
+    #[test]
+    fn test_parse_chunk_size_uppercase() {
+        assert_eq!(parse_chunk_size(b"A\r\n").unwrap(), 10);
+        assert_eq!(parse_chunk_size(b"FF\r\n").unwrap(), 255);
+        assert_eq!(parse_chunk_size(b"DEADBEEF\r\n").unwrap(), 0xDEADBEEF);
+    }
+
+    #[test]
+    fn test_parse_chunk_size_mixed_case() {
+        assert_eq!(parse_chunk_size(b"aB\r\n").unwrap(), 0xAB);
+        assert_eq!(parse_chunk_size(b"DeAdBeEf\r\n").unwrap(), 0xDEADBEEF);
+    }
+
+    #[test]
+    fn test_parse_chunk_size_with_extension() {
+        assert_eq!(parse_chunk_size(b"10;name=value\r\n").unwrap(), 16);
+        assert_eq!(parse_chunk_size(b"ff;ext\r\n").unwrap(), 255);
+    }
+
+    #[test]
+    fn test_parse_chunk_size_with_trailing_space() {
+        // Trailing space before CRLF is handled
+        assert_eq!(parse_chunk_size(b"10 \r\n").unwrap(), 16);
+    }
+
+    #[test]
+    fn test_parse_chunk_size_newline_only() {
+        assert_eq!(parse_chunk_size(b"10\n").unwrap(), 16);
+    }
+
+    #[test]
+    fn test_parse_chunk_size_invalid_hex() {
+        assert!(parse_chunk_size(b"xyz\r\n").is_err());
+        assert!(parse_chunk_size(b"gg\r\n").is_err());
+    }
+
+    #[test]
+    fn test_parse_chunk_size_empty() {
+        assert!(parse_chunk_size(b"\r\n").is_err());
+    }
+
+    // ============================================
+    // should_rewrite_content() tests
+    // ============================================
+
+    #[test]
+    fn test_should_rewrite_text_plain() {
+        let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n";
+        assert!(should_rewrite_content(headers));
+    }
+
+    #[test]
+    fn test_should_rewrite_text_xml() {
+        let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\n\r\n";
+        assert!(should_rewrite_content(headers));
+    }
+
+    #[test]
+    fn test_should_rewrite_application_xml() {
+        let headers = "HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\n\r\n";
+        assert!(should_rewrite_content(headers));
+    }
+
+    #[test]
+    fn test_should_rewrite_json() {
+        let headers = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n";
+        assert!(should_rewrite_content(headers));
+    }
+
+    #[test]
+    fn test_should_rewrite_html() {
+        let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n";
+        assert!(should_rewrite_content(headers));
+    }
+
+    #[test]
+    fn test_should_rewrite_text_html_charset() {
+        let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n";
+        assert!(should_rewrite_content(headers));
+    }
+
+    #[test]
+    fn test_should_not_rewrite_video() {
+        let headers = "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\n\r\n";
+        assert!(!should_rewrite_content(headers));
+    }
+
+    #[test]
+    fn test_should_not_rewrite_audio() {
+        let headers = "HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\n\r\n";
+        assert!(!should_rewrite_content(headers));
+    }
+
+    #[test]
+    fn test_should_not_rewrite_image() {
+        let headers = "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\n\r\n";
+        assert!(!should_rewrite_content(headers));
+    }
+
+    #[test]
+    fn test_should_not_rewrite_octet_stream() {
+        let headers = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\r\n";
+        assert!(!should_rewrite_content(headers));
+    }
+
+    #[test]
+    fn test_should_not_rewrite_missing_content_type() {
+        let headers = "HTTP/1.1 200 OK\r\nServer: Test\r\n\r\n";
+        assert!(!should_rewrite_content(headers));
+    }
+
+    #[test]
+    fn test_should_rewrite_case_insensitive() {
+        let headers = "HTTP/1.1 200 OK\r\nCONTENT-TYPE: TEXT/XML\r\n\r\n";
+        assert!(should_rewrite_content(headers));
+    }
+
+    // ============================================
+    // update_content_length() tests
+    // ============================================
+
+    #[test]
+    fn test_update_content_length_basic() {
+        let headers = "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n";
+        let result = update_content_length(headers, 200);
+        assert!(result.contains("Content-Length: 200"));
+        assert!(!result.contains("Content-Length: 100"));
+    }
+
+    #[test]
+    fn test_update_content_length_case_insensitive() {
+        let headers = "HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\n";
+        let result = update_content_length(headers, 50);
+        assert!(result.contains("Content-Length: 50"));
+    }
+
+    #[test]
+    fn test_update_content_length_preserves_other_headers() {
+        let headers = "HTTP/1.1 200 OK\r\nServer: Test\r\nContent-Length: 100\r\nConnection: close\r\n\r\n";
+        let result = update_content_length(headers, 150);
+        assert!(result.contains("Server: Test"));
+        assert!(result.contains("Content-Length: 150"));
+        assert!(result.contains("Connection: close"));
+    }
+
+    #[test]
+    fn test_update_content_length_no_header() {
+        let headers = "HTTP/1.1 200 OK\r\nServer: Test\r\n\r\n";
+        let result = update_content_length(headers, 100);
+        // Should just return the headers unchanged (no Content-Length to update)
+        assert!(!result.contains("Content-Length:"));
+    }
+
+    // ============================================
+    // read_line_bytes() tests
+    // ============================================
+
+    #[test]
+    fn test_read_line_bytes_simple() {
+        let data = b"Hello\nWorld\n";
+        let mut cursor = Cursor::new(&data[..]);
+        let line = read_line_bytes(&mut cursor).unwrap();
+        assert_eq!(line, b"Hello\n");
+    }
+
+    #[test]
+    fn test_read_line_bytes_crlf() {
+        let data = b"Hello\r\nWorld\r\n";
+        let mut cursor = Cursor::new(&data[..]);
+        let line = read_line_bytes(&mut cursor).unwrap();
+        assert_eq!(line, b"Hello\r\n");
+    }
+
+    #[test]
+    fn test_read_line_bytes_empty() {
+        let data = b"";
+        let mut cursor = Cursor::new(&data[..]);
+        let line = read_line_bytes(&mut cursor).unwrap();
+        assert_eq!(line, b"");
+    }
+
+    #[test]
+    fn test_read_line_bytes_binary_data() {
+        let data = [0x00, 0xFF, 0x80, b'\n', 0x01, 0x02];
+        let mut cursor = Cursor::new(&data[..]);
+        let line = read_line_bytes(&mut cursor).unwrap();
+        assert_eq!(line, &[0x00, 0xFF, 0x80, b'\n']);
+    }
+
+    // ============================================
+    // read_chunked_body() tests
+    // ============================================
+
+    #[test]
+    fn test_read_chunked_body_single_chunk() {
+        let data = b"5\r\nHello\r\n0\r\n\r\n";
+        let mut cursor = Cursor::new(&data[..]);
+        let body = read_chunked_body(&mut cursor).unwrap();
+        assert_eq!(body, b"Hello");
+    }
+
+    #[test]
+    fn test_read_chunked_body_multiple_chunks() {
+        let data = b"5\r\nHello\r\n6\r\n World\r\n0\r\n\r\n";
+        let mut cursor = Cursor::new(&data[..]);
+        let body = read_chunked_body(&mut cursor).unwrap();
+        assert_eq!(body, b"Hello World");
+    }
+
+    #[test]
+    fn test_read_chunked_body_empty() {
+        let data = b"0\r\n\r\n";
+        let mut cursor = Cursor::new(&data[..]);
+        let body = read_chunked_body(&mut cursor).unwrap();
+        assert_eq!(body, b"");
+    }
+
+    #[test]
+    fn test_read_chunked_body_hex_size() {
+        let data = b"a\r\n0123456789\r\n0\r\n\r\n";
+        let mut cursor = Cursor::new(&data[..]);
+        let body = read_chunked_body(&mut cursor).unwrap();
+        assert_eq!(body.len(), 10);
+        assert_eq!(body, b"0123456789");
+    }
+
+    #[test]
+    fn test_read_chunked_body_binary_data() {
+        let chunk_data: Vec<u8> = vec![0x00, 0xFF, 0x80, 0x7F, 0x01];
+        let mut data = format!("{:x}\r\n", chunk_data.len()).into_bytes();
+        data.extend_from_slice(&chunk_data);
+        data.extend_from_slice(b"\r\n0\r\n\r\n");
+
+        let mut cursor = Cursor::new(data);
+        let body = read_chunked_body(&mut cursor).unwrap();
+        assert_eq!(body, chunk_data);
+    }
+
+    // ============================================
+    // write_chunked_body() tests
+    // ============================================
+
+    #[test]
+    fn test_write_chunked_body_simple() {
+        let mut output = Vec::new();
+        write_chunked_body(&mut output, b"Hello").unwrap();
+        assert_eq!(output, b"5\r\nHello\r\n0\r\n\r\n");
+    }
+
+    #[test]
+    fn test_write_chunked_body_empty() {
+        let mut output = Vec::new();
+        write_chunked_body(&mut output, b"").unwrap();
+        assert_eq!(output, b"0\r\n\r\n0\r\n\r\n");
+    }
+
+    #[test]
+    fn test_write_chunked_body_larger() {
+        let body = b"This is a longer test body with multiple words";
+        let mut output = Vec::new();
+        write_chunked_body(&mut output, body).unwrap();
+
+        // Verify format: hex_size\r\nbody\r\n0\r\n\r\n
+        let expected_size = format!("{:x}\r\n", body.len());
+        assert!(output.starts_with(expected_size.as_bytes()));
+        assert!(output.ends_with(b"\r\n0\r\n\r\n"));
+    }
+
+    #[test]
+    fn test_write_chunked_body_binary() {
+        let body: Vec<u8> = vec![0x00, 0xFF, 0x80, 0x7F];
+        let mut output = Vec::new();
+        write_chunked_body(&mut output, &body).unwrap();
+
+        // Verify the body appears in the output
+        // Format: "4\r\n" (3 bytes) + body (4 bytes) + "\r\n0\r\n\r\n"
+        assert!(output.starts_with(b"4\r\n"));
+        assert_eq!(&output[3..7], &body[..]);
+    }
+
+    // ============================================
+    // Round-trip tests: read then write
+    // ============================================
+
+    #[test]
+    fn test_chunked_roundtrip() {
+        let original_body = b"Test body content for round trip";
+
+        // Write as chunked
+        let mut encoded = Vec::new();
+        write_chunked_body(&mut encoded, original_body).unwrap();
+
+        // Read back
+        let mut cursor = Cursor::new(encoded);
+        let decoded = read_chunked_body(&mut cursor).unwrap();
+
+        assert_eq!(decoded, original_body);
+    }
+
+    #[test]
+    fn test_chunked_roundtrip_binary() {
+        let original_body: Vec<u8> = (0..=255).collect();
+
+        // Write as chunked
+        let mut encoded = Vec::new();
+        write_chunked_body(&mut encoded, &original_body).unwrap();
+
+        // Read back
+        let mut cursor = Cursor::new(encoded);
+        let decoded = read_chunked_body(&mut cursor).unwrap();
+
+        assert_eq!(decoded, original_body);
+    }
+
+    // ============================================
+    // URL replacement logic tests
+    // ============================================
+
+    #[test]
+    fn test_url_replacement_basic() {
+        let body = "Location: http://192.168.1.41:55555/desc.xml";
+        let origin = "http://192.168.1.41:55555";
+        let proxy = "http://192.168.1.52:8100";
+
+        let result = body.replace(origin, proxy);
+        assert_eq!(result, "Location: http://192.168.1.52:8100/desc.xml");
+    }
+
+    #[test]
+    fn test_url_replacement_multiple() {
+        let body = "<url>http://192.168.1.41:55555/a</url>\n<url>http://192.168.1.41:55555/b</url>";
+        let origin = "http://192.168.1.41:55555";
+        let proxy = "http://192.168.1.52:8100";
+
+        let result = body.replace(origin, proxy);
+        assert!(result.contains("http://192.168.1.52:8100/a"));
+        assert!(result.contains("http://192.168.1.52:8100/b"));
+        assert!(!result.contains("192.168.1.41"));
+    }
+
+    #[test]
+    fn test_url_replacement_xml_body() {
+        let body = r#"<?xml version="1.0"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+  <URLBase>http://192.168.1.41:55555/</URLBase>
+  <device>
+    <presentationURL>http://192.168.1.41:55555/index.html</presentationURL>
+  </device>
+</root>"#;
+        let origin = "http://192.168.1.41:55555";
+        let proxy = "http://192.168.1.52:8100";
+
+        let result = body.replace(origin, proxy);
+        assert!(result.contains("http://192.168.1.52:8100/"));
+        assert!(result.contains("http://192.168.1.52:8100/index.html"));
+        assert!(!result.contains("192.168.1.41:55555"));
+    }
+
+    #[test]
+    fn test_url_replacement_no_match() {
+        let body = "Some content without URLs";
+        let origin = "http://192.168.1.41:55555";
+        let proxy = "http://192.168.1.52:8100";
+
+        let result = body.replace(origin, proxy);
+        assert_eq!(result, body);
+    }
+}

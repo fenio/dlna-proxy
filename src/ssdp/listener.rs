@@ -16,7 +16,7 @@ use crate::ssdp::utils::InteractiveSSDP;
     SSDP RFC for reference: https://tools.ietf.org/html/draft-cai-ssdp-v1-03
 */
 
-fn parse_ssdp(buffer: &[u8]) -> Result<(String, HashMap<String, Cow<'_, str>>)> {
+pub(crate) fn parse_ssdp(buffer: &[u8]) -> Result<(String, HashMap<String, Cow<'_, str>>)> {
     let mut headers = [EMPTY_HEADER; 16];
     let mut req = Request::new(&mut headers);
 
@@ -86,5 +86,160 @@ pub async fn listen_task(ssdp_socket: Arc<UdpSocket>, ssdp_helper: Arc<Interacti
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============================================
+    // parse_ssdp() M-SEARCH parsing tests
+    // ============================================
+
+    #[test]
+    fn test_parse_ssdp_msearch_ssdp_all() {
+        let packet = b"M-SEARCH * HTTP/1.1\r\n\
+            HOST: 239.255.255.250:1900\r\n\
+            MAN: \"ssdp:discover\"\r\n\
+            MX: 3\r\n\
+            ST: ssdp:all\r\n\
+            \r\n";
+
+        let (method, headers) = parse_ssdp(packet).unwrap();
+        assert_eq!(method, "M-SEARCH");
+        assert_eq!(headers.get("ST").map(|s| s.as_ref()), Some("ssdp:all"));
+    }
+
+    #[test]
+    fn test_parse_ssdp_msearch_mediaserver() {
+        let packet = b"M-SEARCH * HTTP/1.1\r\n\
+            HOST: 239.255.255.250:1900\r\n\
+            MAN: \"ssdp:discover\"\r\n\
+            MX: 3\r\n\
+            ST: urn:schemas-upnp-org:device:MediaServer:1\r\n\
+            \r\n";
+
+        let (method, headers) = parse_ssdp(packet).unwrap();
+        assert_eq!(method, "M-SEARCH");
+        assert_eq!(
+            headers.get("ST").map(|s| s.as_ref()),
+            Some("urn:schemas-upnp-org:device:MediaServer:1")
+        );
+    }
+
+    #[test]
+    fn test_parse_ssdp_msearch_rootdevice() {
+        let packet = b"M-SEARCH * HTTP/1.1\r\n\
+            HOST: 239.255.255.250:1900\r\n\
+            MAN: \"ssdp:discover\"\r\n\
+            MX: 3\r\n\
+            ST: upnp:rootdevice\r\n\
+            \r\n";
+
+        let (method, headers) = parse_ssdp(packet).unwrap();
+        assert_eq!(method, "M-SEARCH");
+        assert_eq!(headers.get("ST").map(|s| s.as_ref()), Some("upnp:rootdevice"));
+    }
+
+    // ============================================
+    // Header extraction tests
+    // ============================================
+
+    #[test]
+    fn test_parse_ssdp_extracts_man_header() {
+        let packet = b"M-SEARCH * HTTP/1.1\r\n\
+            HOST: 239.255.255.250:1900\r\n\
+            MAN: \"ssdp:discover\"\r\n\
+            ST: ssdp:all\r\n\
+            \r\n";
+
+        let (_, headers) = parse_ssdp(packet).unwrap();
+        assert_eq!(headers.get("MAN").map(|s| s.as_ref()), Some("\"ssdp:discover\""));
+    }
+
+    #[test]
+    fn test_parse_ssdp_extracts_host_header() {
+        let packet = b"M-SEARCH * HTTP/1.1\r\n\
+            HOST: 239.255.255.250:1900\r\n\
+            ST: ssdp:all\r\n\
+            \r\n";
+
+        let (_, headers) = parse_ssdp(packet).unwrap();
+        assert_eq!(headers.get("HOST").map(|s| s.as_ref()), Some("239.255.255.250:1900"));
+    }
+
+    #[test]
+    fn test_parse_ssdp_extracts_mx_header() {
+        let packet = b"M-SEARCH * HTTP/1.1\r\n\
+            HOST: 239.255.255.250:1900\r\n\
+            MX: 5\r\n\
+            ST: ssdp:all\r\n\
+            \r\n";
+
+        let (_, headers) = parse_ssdp(packet).unwrap();
+        assert_eq!(headers.get("MX").map(|s| s.as_ref()), Some("5"));
+    }
+
+    // ============================================
+    // Header name normalization tests
+    // ============================================
+
+    #[test]
+    fn test_parse_ssdp_normalizes_headers_to_uppercase() {
+        let packet = b"M-SEARCH * HTTP/1.1\r\n\
+            host: 239.255.255.250:1900\r\n\
+            man: \"ssdp:discover\"\r\n\
+            st: ssdp:all\r\n\
+            \r\n";
+
+        let (_, headers) = parse_ssdp(packet).unwrap();
+        // Headers should be normalized to uppercase
+        assert!(headers.contains_key("HOST"));
+        assert!(headers.contains_key("MAN"));
+        assert!(headers.contains_key("ST"));
+    }
+
+    #[test]
+    fn test_parse_ssdp_mixed_case_headers() {
+        let packet = b"M-SEARCH * HTTP/1.1\r\n\
+            Host: 239.255.255.250:1900\r\n\
+            Man: \"ssdp:discover\"\r\n\
+            St: ssdp:all\r\n\
+            \r\n";
+
+        let (_, headers) = parse_ssdp(packet).unwrap();
+        // Headers should be normalized to uppercase
+        assert!(headers.contains_key("HOST"));
+        assert!(headers.contains_key("MAN"));
+        assert!(headers.contains_key("ST"));
+    }
+
+    // ============================================
+    // Malformed input tests
+    // ============================================
+
+    #[test]
+    fn test_parse_ssdp_empty_buffer() {
+        let packet = b"";
+        let result = parse_ssdp(packet);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_ssdp_garbage_data() {
+        let packet = b"not a valid http request at all\x00\xff\xfe";
+        let result = parse_ssdp(packet);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_ssdp_incomplete_request() {
+        let packet = b"M-SEARCH * HTTP/1.1\r\n";
+        // This should still parse the method even without complete headers
+        let result = parse_ssdp(packet);
+        // May succeed with just method or fail depending on httparse behavior
+        // The important thing is it doesn't panic
+        let _ = result;
     }
 }

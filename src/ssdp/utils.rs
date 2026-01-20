@@ -10,17 +10,17 @@ use serde::Deserialize;
 use crate::ssdp::packet::SSDPPacket;
 
 #[derive(Debug, Deserialize)]
-struct DLNADevice {
+pub(crate) struct DLNADevice {
     #[serde(rename = "deviceType")]
-    device_type: String,
+    pub(crate) device_type: String,
 
     #[serde(rename = "UDN")]
-    unique_device_name: String,
+    pub(crate) unique_device_name: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct DLNADescription {
-    device: DLNADevice,
+pub(crate) struct DLNADescription {
+    pub(crate) device: DLNADevice,
 }
 
 pub struct EndpointInfo {
@@ -127,5 +127,106 @@ impl InteractiveSSDP {
         };
 
         self.send_to(socket, dest, ssdp_byebye, "byebye").await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============================================
+    // XML parsing tests for DLNADescription
+    // ============================================
+
+    #[test]
+    fn test_parse_dlna_description_basic() {
+        let xml = r#"<?xml version="1.0"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+    <device>
+        <deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>
+        <UDN>uuid:4d696e69-444c-164e-9d41-ecf4bb8d1234</UDN>
+    </device>
+</root>"#;
+
+        let desc: DLNADescription = quick_xml::de::from_str(xml).unwrap();
+        assert_eq!(desc.device.device_type, "urn:schemas-upnp-org:device:MediaServer:1");
+        assert_eq!(desc.device.unique_device_name, "uuid:4d696e69-444c-164e-9d41-ecf4bb8d1234");
+    }
+
+    #[test]
+    fn test_parse_dlna_description_with_extra_fields() {
+        let xml = r#"<?xml version="1.0"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+    <specVersion>
+        <major>1</major>
+        <minor>0</minor>
+    </specVersion>
+    <device>
+        <deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>
+        <friendlyName>My Media Server</friendlyName>
+        <manufacturer>Test Company</manufacturer>
+        <modelName>Test Model</modelName>
+        <modelNumber>1.0</modelNumber>
+        <UDN>uuid:test-device-udn</UDN>
+        <serviceList>
+            <service>
+                <serviceType>urn:schemas-upnp-org:service:ContentDirectory:1</serviceType>
+            </service>
+        </serviceList>
+    </device>
+</root>"#;
+
+        let desc: DLNADescription = quick_xml::de::from_str(xml).unwrap();
+        // Should parse successfully, ignoring extra fields
+        assert_eq!(desc.device.device_type, "urn:schemas-upnp-org:device:MediaServer:1");
+        assert_eq!(desc.device.unique_device_name, "uuid:test-device-udn");
+    }
+
+    #[test]
+    fn test_parse_dlna_description_minimal() {
+        // Test with minimal required fields only
+        let xml = r#"<root>
+    <device>
+        <deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>
+        <UDN>uuid:minimal-device</UDN>
+    </device>
+</root>"#;
+
+        let desc: DLNADescription = quick_xml::de::from_str(xml).unwrap();
+        assert_eq!(desc.device.device_type, "urn:schemas-upnp-org:device:MediaRenderer:1");
+        assert_eq!(desc.device.unique_device_name, "uuid:minimal-device");
+    }
+
+    #[test]
+    fn test_parse_dlna_description_missing_device_type() {
+        let xml = r#"<root>
+    <device>
+        <UDN>uuid:test-device</UDN>
+    </device>
+</root>"#;
+
+        let result: Result<DLNADescription, _> = quick_xml::de::from_str(xml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_dlna_description_missing_udn() {
+        let xml = r#"<root>
+    <device>
+        <deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>
+    </device>
+</root>"#;
+
+        let result: Result<DLNADescription, _> = quick_xml::de::from_str(xml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_dlna_description_missing_device() {
+        let xml = r#"<root>
+</root>"#;
+
+        let result: Result<DLNADescription, _> = quick_xml::de::from_str(xml);
+        assert!(result.is_err());
     }
 }
