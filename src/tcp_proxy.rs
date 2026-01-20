@@ -1,13 +1,23 @@
 use log::{debug, error, info, trace, warn};
 
-use std::{
-    io::{self, BufRead, BufReader, Read, Write},
-    net::{SocketAddr, TcpListener, TcpStream},
-    thread::{self, JoinHandle},
-    time::Duration,
+use std::{net::SocketAddr, sync::Arc, time::Duration};
+use tokio::{
+    io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    net::{TcpListener, TcpStream},
+    sync::Semaphore,
+    task::JoinHandle,
+    time::timeout,
 };
 
 //Adapted from https://github.com/hishboy/rust-tcp-proxy/
+
+/// Maximum body size (10 MB) for content that needs URL rewriting.
+/// Bodies larger than this will be passed through without rewriting to prevent OOM.
+const MAX_REWRITABLE_BODY_SIZE: usize = 10 * 1024 * 1024;
+
+/// Maximum number of concurrent proxy connections.
+/// Provides backpressure to prevent resource exhaustion.
+const MAX_CONCURRENT_CONNECTIONS: usize = 100;
 
 pub struct TCPProxy {
     connect_timeout: Duration,
@@ -35,118 +45,107 @@ impl TCPProxy {
         }
     }
 
-    pub fn start(self, to: SocketAddr, from: SocketAddr) -> io::Result<JoinHandle<()>> {
-        let listener = TcpListener::bind(from).map_err(|e| {
+    pub async fn start(self, to: SocketAddr, from: SocketAddr) -> io::Result<JoinHandle<()>> {
+        let listener = TcpListener::bind(from).await.map_err(|e| {
             error!(target: "dlnaproxy", "Failed to bind TCP proxy to {}: {}", from, e);
             e
         })?;
 
         info!(target: "dlnaproxy", "Proxying TCP connections from {} to {} (with URL rewriting)", from, to);
 
-        Ok(thread::spawn(self.listen_loop(listener, to)))
-    }
-
-    fn listen_loop(self, listener: TcpListener, origin: SocketAddr) -> impl FnOnce() {
         let connect_timeout = self.connect_timeout;
         let stream_timeout = self.stream_timeout;
         let origin_url_base = self.origin_url_base;
         let proxy_url_base = self.proxy_url_base;
 
-        move || {
-            for incoming_stream in listener.incoming() {
-                let proxied_stream = match incoming_stream {
-                    Ok(stream) => stream,
-                    Err(e) => {
-                        warn!(target: "dlnaproxy", "Failed to accept incoming connection: {}", e);
-                        continue;
-                    }
-                };
-
-                let peer_addr = match proxied_stream.peer_addr() {
-                    Ok(addr) => addr,
-                    Err(e) => {
-                        warn!(target: "dlnaproxy", "Failed to get peer address: {}", e);
-                        continue;
-                    }
-                };
-
-                // Set timeouts on the incoming stream
-                if let Err(e) = proxied_stream.set_read_timeout(Some(stream_timeout)) {
-                    warn!(target: "dlnaproxy", "Failed to set read timeout: {}", e);
-                }
-                if let Err(e) = proxied_stream.set_write_timeout(Some(stream_timeout)) {
-                    warn!(target: "dlnaproxy", "Failed to set write timeout: {}", e);
-                }
-
-                // Connect to origin with timeout
-                let to_stream = match TcpStream::connect_timeout(&origin, connect_timeout) {
-                    Ok(stream) => stream,
-                    Err(e) => {
-                        warn!(target: "dlnaproxy", "Failed to connect to origin {}: {}", origin, e);
-                        continue;
-                    }
-                };
-
-                // Set timeouts on the origin stream
-                if let Err(e) = to_stream.set_read_timeout(Some(stream_timeout)) {
-                    warn!(target: "dlnaproxy", "Failed to set read timeout on origin: {}", e);
-                }
-                if let Err(e) = to_stream.set_write_timeout(Some(stream_timeout)) {
-                    warn!(target: "dlnaproxy", "Failed to set write timeout on origin: {}", e);
-                }
-
-                let origin_base = origin_url_base.clone();
-                let proxy_base = proxy_url_base.clone();
-
-                // Spawn handler thread
-                thread::spawn(move || {
-                    handle_conn(
-                        proxied_stream,
-                        to_stream,
-                        peer_addr,
-                        origin_base,
-                        proxy_base,
-                    )
-                });
-
-                debug!(target: "dlnaproxy", "Successfully established a connection with client: {}", peer_addr);
-            }
-        }
+        Ok(tokio::spawn(async move {
+            listen_loop(
+                listener,
+                to,
+                connect_timeout,
+                stream_timeout,
+                origin_url_base,
+                proxy_url_base,
+            )
+            .await
+        }))
     }
 }
 
-fn handle_conn(
+async fn listen_loop(
+    listener: TcpListener,
+    origin: SocketAddr,
+    connect_timeout: Duration,
+    _stream_timeout: Duration,
+    origin_url_base: String,
+    proxy_url_base: String,
+) {
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
+
+    loop {
+        let (proxied_stream, peer_addr) = match listener.accept().await {
+            Ok((stream, addr)) => (stream, addr),
+            Err(e) => {
+                warn!(target: "dlnaproxy", "Failed to accept incoming connection: {}", e);
+                continue;
+            }
+        };
+
+        // Acquire permit for connection limiting (waits if at capacity)
+        let permit = match semaphore.clone().acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => {
+                // Semaphore was closed, exit the loop
+                warn!(target: "dlnaproxy", "Connection semaphore closed, stopping listener");
+                break;
+            }
+        };
+
+        // Connect to origin with timeout
+        let to_stream = match timeout(connect_timeout, TcpStream::connect(origin)).await {
+            Ok(Ok(stream)) => stream,
+            Ok(Err(e)) => {
+                warn!(target: "dlnaproxy", "Failed to connect to origin {}: {}", origin, e);
+                // permit is dropped here, releasing the slot
+                continue;
+            }
+            Err(_) => {
+                warn!(target: "dlnaproxy", "Timeout connecting to origin {}", origin);
+                // permit is dropped here, releasing the slot
+                continue;
+            }
+        };
+
+        let origin_base = origin_url_base.clone();
+        let proxy_base = proxy_url_base.clone();
+
+        // Spawn handler task - permit is moved in and released when task completes
+        tokio::spawn(async move {
+            handle_conn(proxied_stream, to_stream, peer_addr, origin_base, proxy_base).await;
+            drop(permit); // Explicitly release permit when connection closes
+        });
+
+        debug!(target: "dlnaproxy", "Successfully established a connection with client: {}", peer_addr);
+    }
+}
+
+async fn handle_conn(
     client_stream: TcpStream,
     origin_stream: TcpStream,
     peer_addr: SocketAddr,
     origin_url_base: String,
     proxy_url_base: String,
 ) {
-    // Clone streams for bidirectional communication
-    let client_read = match client_stream.try_clone() {
-        Ok(s) => s,
-        Err(e) => {
-            warn!(target: "dlnaproxy", "Failed to clone client stream for {}: {}", peer_addr, e);
-            return;
-        }
-    };
-    let client_write = client_stream;
-
-    let origin_read = match origin_stream.try_clone() {
-        Ok(s) => s,
-        Err(e) => {
-            warn!(target: "dlnaproxy", "Failed to clone origin stream for {}: {}", peer_addr, e);
-            return;
-        }
-    };
-    let origin_write = origin_stream;
+    // Split streams for bidirectional communication
+    let (client_read, client_write) = client_stream.into_split();
+    let (origin_read, origin_write) = origin_stream.into_split();
 
     // Client -> Origin: forward requests without modification
     let peer_addr_copy = peer_addr;
-    let client_to_origin = thread::spawn(move || {
+    let client_to_origin = tokio::spawn(async move {
         let mut client_read = client_read;
         let mut origin_write = origin_write;
-        match io::copy(&mut client_read, &mut origin_write) {
+        match tokio::io::copy(&mut client_read, &mut origin_write).await {
             Ok(bytes) => {
                 trace!(target: "dlnaproxy", "Copied {} bytes client->origin for {}", bytes, peer_addr_copy)
             }
@@ -158,24 +157,26 @@ fn handle_conn(
 
     // Origin -> Client: rewrite URLs in responses
     let peer_addr_copy = peer_addr;
-    let origin_to_client = thread::spawn(move || {
+    let origin_to_client = tokio::spawn(async move {
         if let Err(e) = proxy_response_with_rewrite(
             origin_read,
             client_write,
             &origin_url_base,
             &proxy_url_base,
             peer_addr_copy,
-        ) {
+        )
+        .await
+        {
             trace!(target: "dlnaproxy", "Response proxy ended for {}: {}", peer_addr_copy, e);
         }
     });
 
     // Wait for both directions to complete
-    if let Err(e) = client_to_origin.join() {
-        warn!(target: "dlnaproxy", "Client->origin thread panicked for {}: {:?}", peer_addr, e);
+    if let Err(e) = client_to_origin.await {
+        warn!(target: "dlnaproxy", "Client->origin task panicked for {}: {:?}", peer_addr, e);
     }
-    if let Err(e) = origin_to_client.join() {
-        warn!(target: "dlnaproxy", "Origin->client thread panicked for {}: {:?}", peer_addr, e);
+    if let Err(e) = origin_to_client.await {
+        warn!(target: "dlnaproxy", "Origin->client task panicked for {}: {:?}", peer_addr, e);
     }
 
     trace!(target: "dlnaproxy", "Closed connection with: {}", peer_addr);
@@ -183,9 +184,9 @@ fn handle_conn(
 
 /// Read a line (until \n) as raw bytes, without requiring valid UTF-8.
 /// This is essential for handling binary data that might appear in streams.
-fn read_line_bytes<R: BufRead>(reader: &mut R) -> io::Result<Vec<u8>> {
+async fn read_line_bytes<R: AsyncBufReadExt + Unpin>(reader: &mut R) -> io::Result<Vec<u8>> {
     let mut line = Vec::new();
-    reader.read_until(b'\n', &mut line)?;
+    reader.read_until(b'\n', &mut line).await?;
     Ok(line)
 }
 
@@ -228,9 +229,9 @@ fn should_rewrite_content(headers: &str) -> bool {
 }
 
 /// Proxy HTTP responses from origin to client, rewriting URLs in the body
-fn proxy_response_with_rewrite(
-    origin_read: TcpStream,
-    mut client_write: TcpStream,
+async fn proxy_response_with_rewrite(
+    origin_read: tokio::net::tcp::OwnedReadHalf,
+    mut client_write: tokio::net::tcp::OwnedWriteHalf,
     origin_url_base: &str,
     proxy_url_base: &str,
     peer_addr: SocketAddr,
@@ -245,7 +246,7 @@ fn proxy_response_with_rewrite(
 
         // Read headers line by line (as raw bytes to handle non-UTF8 gracefully)
         loop {
-            let line = read_line_bytes(&mut reader)?;
+            let line = read_line_bytes(&mut reader).await?;
             if line.is_empty() {
                 // Connection closed
                 return Ok(());
@@ -301,49 +302,56 @@ fn proxy_response_with_rewrite(
         // Handle responses without Content-Length and not chunked
         // This is typically a streaming response - read until connection close
         if !is_chunked && content_length.is_none() {
-            client_write.write_all(&header_buf)?;
-            client_write.flush()?;
+            client_write.write_all(&header_buf).await?;
+            client_write.flush().await?;
 
             // Stream remaining data until origin closes connection
-            let bytes_copied = io::copy(&mut reader, &mut client_write)?;
+            let bytes_copied = tokio::io::copy(&mut reader, &mut client_write).await?;
             trace!(target: "dlnaproxy", "Streamed {} bytes for {} (no Content-Length)", bytes_copied, peer_addr);
             return Ok(()); // Connection is done after streaming
         }
 
-        // For binary content, pass through without modification
-        if !needs_rewrite {
-            client_write.write_all(&header_buf)?;
+        // Check if body is too large for URL rewriting (to prevent OOM)
+        let body_too_large = content_length.is_some_and(|len| len > MAX_REWRITABLE_BODY_SIZE);
+        if body_too_large {
+            warn!(target: "dlnaproxy", "Body too large for URL rewriting ({} bytes), passing through for {}",
+                  content_length.unwrap_or(0), peer_addr);
+        }
+
+        // For binary content or bodies too large for rewriting, pass through without modification
+        if !needs_rewrite || body_too_large {
+            client_write.write_all(&header_buf).await?;
 
             if is_chunked {
                 // Pass through chunked data as-is
-                pass_through_chunked(&mut reader, &mut client_write)?;
+                pass_through_chunked(&mut reader, &mut client_write).await?;
             } else if let Some(len) = content_length {
                 // Pass through fixed-length binary data
                 let mut remaining = len;
                 let mut buf = [0u8; 8192];
                 while remaining > 0 {
                     let to_read = std::cmp::min(remaining, buf.len());
-                    let bytes_read = reader.read(&mut buf[..to_read])?;
+                    let bytes_read = reader.read(&mut buf[..to_read]).await?;
                     if bytes_read == 0 {
                         break;
                     }
-                    client_write.write_all(&buf[..bytes_read])?;
+                    client_write.write_all(&buf[..bytes_read]).await?;
                     remaining -= bytes_read;
                 }
             }
 
-            client_write.flush()?;
-            trace!(target: "dlnaproxy", "Proxied binary response for {} ({} bytes)", 
+            client_write.flush().await?;
+            trace!(target: "dlnaproxy", "Proxied binary response for {} ({} bytes)",
                    peer_addr, content_length.unwrap_or(0));
             continue;
         }
 
         // Read body for text/XML content that needs URL rewriting
         let body = if is_chunked {
-            read_chunked_body(&mut reader)?
+            read_chunked_body(&mut reader, MAX_REWRITABLE_BODY_SIZE).await?
         } else if let Some(len) = content_length {
             let mut body = vec![0u8; len];
-            reader.read_exact(&mut body)?;
+            reader.read_exact(&mut body).await?;
             body
         } else {
             // Already handled above
@@ -364,31 +372,35 @@ fn proxy_response_with_rewrite(
         };
 
         // Send updated headers and body
-        client_write.write_all(updated_headers.as_bytes())?;
+        client_write.write_all(updated_headers.as_bytes()).await?;
 
         if is_chunked {
             // Re-encode as chunked
-            write_chunked_body(&mut client_write, rewritten_bytes)?;
+            write_chunked_body(&mut client_write, rewritten_bytes).await?;
         } else {
-            client_write.write_all(rewritten_bytes)?;
+            client_write.write_all(rewritten_bytes).await?;
         }
 
-        client_write.flush()?;
+        client_write.flush().await?;
 
-        trace!(target: "dlnaproxy", "Proxied response with URL rewriting for {} ({} -> {} bytes)", 
+        trace!(target: "dlnaproxy", "Proxied response with URL rewriting for {} ({} -> {} bytes)",
                peer_addr, body.len(), rewritten_bytes.len());
     }
 }
 
 /// Pass through chunked data without buffering the entire body
-fn pass_through_chunked<R: BufRead, W: Write>(reader: &mut R, writer: &mut W) -> io::Result<()> {
+async fn pass_through_chunked<R, W>(reader: &mut R, writer: &mut W) -> io::Result<()>
+where
+    R: AsyncBufReadExt + Unpin,
+    W: AsyncWriteExt + Unpin,
+{
     loop {
         // Read chunk size line as raw bytes
-        let size_line = read_line_bytes(reader)?;
+        let size_line = read_line_bytes(reader).await?;
         if size_line.is_empty() {
             break;
         }
-        writer.write_all(&size_line)?;
+        writer.write_all(&size_line).await?;
 
         // Parse chunk size (hex) from raw bytes
         let chunk_size = parse_chunk_size(&size_line)?;
@@ -396,8 +408,8 @@ fn pass_through_chunked<R: BufRead, W: Write>(reader: &mut R, writer: &mut W) ->
         if chunk_size == 0 {
             // Read and forward trailing CRLF after last chunk
             let mut trailer = Vec::new();
-            reader.read_until(b'\n', &mut trailer)?;
-            writer.write_all(&trailer)?;
+            reader.read_until(b'\n', &mut trailer).await?;
+            writer.write_all(&trailer).await?;
             break;
         }
 
@@ -406,30 +418,33 @@ fn pass_through_chunked<R: BufRead, W: Write>(reader: &mut R, writer: &mut W) ->
         let mut buf = [0u8; 8192];
         while remaining > 0 {
             let to_read = std::cmp::min(remaining, buf.len());
-            let bytes_read = reader.read(&mut buf[..to_read])?;
+            let bytes_read = reader.read(&mut buf[..to_read]).await?;
             if bytes_read == 0 {
                 break;
             }
-            writer.write_all(&buf[..bytes_read])?;
+            writer.write_all(&buf[..bytes_read]).await?;
             remaining -= bytes_read;
         }
 
         // Read and forward trailing CRLF after chunk
         let mut crlf = [0u8; 2];
-        reader.read_exact(&mut crlf)?;
-        writer.write_all(&crlf)?;
+        reader.read_exact(&mut crlf).await?;
+        writer.write_all(&crlf).await?;
     }
 
     Ok(())
 }
 
-/// Read a chunked HTTP body
-fn read_chunked_body<R: BufRead>(reader: &mut R) -> io::Result<Vec<u8>> {
+/// Read a chunked HTTP body with a maximum size limit to prevent OOM
+async fn read_chunked_body<R: AsyncBufReadExt + Unpin>(
+    reader: &mut R,
+    max_size: usize,
+) -> io::Result<Vec<u8>> {
     let mut body = Vec::new();
 
     loop {
         // Read chunk size line as raw bytes
-        let size_line = read_line_bytes(reader)?;
+        let size_line = read_line_bytes(reader).await?;
         if size_line.is_empty() {
             break;
         }
@@ -440,31 +455,46 @@ fn read_chunked_body<R: BufRead>(reader: &mut R) -> io::Result<Vec<u8>> {
         if chunk_size == 0 {
             // Read trailing CRLF after last chunk
             let mut trailer = Vec::new();
-            reader.read_until(b'\n', &mut trailer)?;
+            reader.read_until(b'\n', &mut trailer).await?;
             break;
+        }
+
+        // Check if this chunk would exceed the maximum size
+        if body.len() + chunk_size > max_size {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Chunked body exceeds maximum size ({} bytes)",
+                    max_size
+                ),
+            ));
         }
 
         // Read chunk data
         let mut chunk = vec![0u8; chunk_size];
-        reader.read_exact(&mut chunk)?;
+        reader.read_exact(&mut chunk).await?;
         body.extend_from_slice(&chunk);
 
         // Read trailing CRLF after chunk
         let mut crlf = [0u8; 2];
-        reader.read_exact(&mut crlf)?;
+        reader.read_exact(&mut crlf).await?;
     }
 
     Ok(body)
 }
 
 /// Write body as chunked encoding
-fn write_chunked_body<W: Write>(writer: &mut W, body: &[u8]) -> io::Result<()> {
+async fn write_chunked_body<W: AsyncWriteExt + Unpin>(
+    writer: &mut W,
+    body: &[u8],
+) -> io::Result<()> {
     // Write single chunk with all data
-    write!(writer, "{:x}\r\n", body.len())?;
-    writer.write_all(body)?;
-    writer.write_all(b"\r\n")?;
+    let size_line = format!("{:x}\r\n", body.len());
+    writer.write_all(size_line.as_bytes()).await?;
+    writer.write_all(body).await?;
+    writer.write_all(b"\r\n").await?;
     // Write terminating chunk
-    writer.write_all(b"0\r\n\r\n")?;
+    writer.write_all(b"0\r\n\r\n").await?;
     Ok(())
 }
 
@@ -662,35 +692,35 @@ mod tests {
     // read_line_bytes() tests
     // ============================================
 
-    #[test]
-    fn test_read_line_bytes_simple() {
+    #[tokio::test]
+    async fn test_read_line_bytes_simple() {
         let data = b"Hello\nWorld\n";
         let mut cursor = Cursor::new(&data[..]);
-        let line = read_line_bytes(&mut cursor).unwrap();
+        let line = read_line_bytes(&mut cursor).await.unwrap();
         assert_eq!(line, b"Hello\n");
     }
 
-    #[test]
-    fn test_read_line_bytes_crlf() {
+    #[tokio::test]
+    async fn test_read_line_bytes_crlf() {
         let data = b"Hello\r\nWorld\r\n";
         let mut cursor = Cursor::new(&data[..]);
-        let line = read_line_bytes(&mut cursor).unwrap();
+        let line = read_line_bytes(&mut cursor).await.unwrap();
         assert_eq!(line, b"Hello\r\n");
     }
 
-    #[test]
-    fn test_read_line_bytes_empty() {
+    #[tokio::test]
+    async fn test_read_line_bytes_empty() {
         let data = b"";
         let mut cursor = Cursor::new(&data[..]);
-        let line = read_line_bytes(&mut cursor).unwrap();
+        let line = read_line_bytes(&mut cursor).await.unwrap();
         assert_eq!(line, b"");
     }
 
-    #[test]
-    fn test_read_line_bytes_binary_data() {
+    #[tokio::test]
+    async fn test_read_line_bytes_binary_data() {
         let data = [0x00, 0xFF, 0x80, b'\n', 0x01, 0x02];
         let mut cursor = Cursor::new(&data[..]);
-        let line = read_line_bytes(&mut cursor).unwrap();
+        let line = read_line_bytes(&mut cursor).await.unwrap();
         assert_eq!(line, &[0x00, 0xFF, 0x80, b'\n']);
     }
 
@@ -698,74 +728,84 @@ mod tests {
     // read_chunked_body() tests
     // ============================================
 
-    #[test]
-    fn test_read_chunked_body_single_chunk() {
+    #[tokio::test]
+    async fn test_read_chunked_body_single_chunk() {
         let data = b"5\r\nHello\r\n0\r\n\r\n";
         let mut cursor = Cursor::new(&data[..]);
-        let body = read_chunked_body(&mut cursor).unwrap();
+        let body = read_chunked_body(&mut cursor, MAX_REWRITABLE_BODY_SIZE).await.unwrap();
         assert_eq!(body, b"Hello");
     }
 
-    #[test]
-    fn test_read_chunked_body_multiple_chunks() {
+    #[tokio::test]
+    async fn test_read_chunked_body_multiple_chunks() {
         let data = b"5\r\nHello\r\n6\r\n World\r\n0\r\n\r\n";
         let mut cursor = Cursor::new(&data[..]);
-        let body = read_chunked_body(&mut cursor).unwrap();
+        let body = read_chunked_body(&mut cursor, MAX_REWRITABLE_BODY_SIZE).await.unwrap();
         assert_eq!(body, b"Hello World");
     }
 
-    #[test]
-    fn test_read_chunked_body_empty() {
+    #[tokio::test]
+    async fn test_read_chunked_body_empty() {
         let data = b"0\r\n\r\n";
         let mut cursor = Cursor::new(&data[..]);
-        let body = read_chunked_body(&mut cursor).unwrap();
+        let body = read_chunked_body(&mut cursor, MAX_REWRITABLE_BODY_SIZE).await.unwrap();
         assert_eq!(body, b"");
     }
 
-    #[test]
-    fn test_read_chunked_body_hex_size() {
+    #[tokio::test]
+    async fn test_read_chunked_body_hex_size() {
         let data = b"a\r\n0123456789\r\n0\r\n\r\n";
         let mut cursor = Cursor::new(&data[..]);
-        let body = read_chunked_body(&mut cursor).unwrap();
+        let body = read_chunked_body(&mut cursor, MAX_REWRITABLE_BODY_SIZE).await.unwrap();
         assert_eq!(body.len(), 10);
         assert_eq!(body, b"0123456789");
     }
 
-    #[test]
-    fn test_read_chunked_body_binary_data() {
+    #[tokio::test]
+    async fn test_read_chunked_body_binary_data() {
         let chunk_data: Vec<u8> = vec![0x00, 0xFF, 0x80, 0x7F, 0x01];
         let mut data = format!("{:x}\r\n", chunk_data.len()).into_bytes();
         data.extend_from_slice(&chunk_data);
         data.extend_from_slice(b"\r\n0\r\n\r\n");
 
         let mut cursor = Cursor::new(data);
-        let body = read_chunked_body(&mut cursor).unwrap();
+        let body = read_chunked_body(&mut cursor, MAX_REWRITABLE_BODY_SIZE).await.unwrap();
         assert_eq!(body, chunk_data);
+    }
+
+    #[tokio::test]
+    async fn test_read_chunked_body_exceeds_max_size() {
+        // Create chunked data that exceeds a small limit
+        let data = b"10\r\n0123456789abcdef\r\n0\r\n\r\n"; // 16 bytes
+        let mut cursor = Cursor::new(&data[..]);
+        let result = read_chunked_body(&mut cursor, 10).await; // limit to 10 bytes
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
     }
 
     // ============================================
     // write_chunked_body() tests
     // ============================================
 
-    #[test]
-    fn test_write_chunked_body_simple() {
+    #[tokio::test]
+    async fn test_write_chunked_body_simple() {
         let mut output = Vec::new();
-        write_chunked_body(&mut output, b"Hello").unwrap();
+        write_chunked_body(&mut output, b"Hello").await.unwrap();
         assert_eq!(output, b"5\r\nHello\r\n0\r\n\r\n");
     }
 
-    #[test]
-    fn test_write_chunked_body_empty() {
+    #[tokio::test]
+    async fn test_write_chunked_body_empty() {
         let mut output = Vec::new();
-        write_chunked_body(&mut output, b"").unwrap();
+        write_chunked_body(&mut output, b"").await.unwrap();
         assert_eq!(output, b"0\r\n\r\n0\r\n\r\n");
     }
 
-    #[test]
-    fn test_write_chunked_body_larger() {
+    #[tokio::test]
+    async fn test_write_chunked_body_larger() {
         let body = b"This is a longer test body with multiple words";
         let mut output = Vec::new();
-        write_chunked_body(&mut output, body).unwrap();
+        write_chunked_body(&mut output, body).await.unwrap();
 
         // Verify format: hex_size\r\nbody\r\n0\r\n\r\n
         let expected_size = format!("{:x}\r\n", body.len());
@@ -773,11 +813,11 @@ mod tests {
         assert!(output.ends_with(b"\r\n0\r\n\r\n"));
     }
 
-    #[test]
-    fn test_write_chunked_body_binary() {
+    #[tokio::test]
+    async fn test_write_chunked_body_binary() {
         let body: Vec<u8> = vec![0x00, 0xFF, 0x80, 0x7F];
         let mut output = Vec::new();
-        write_chunked_body(&mut output, &body).unwrap();
+        write_chunked_body(&mut output, &body).await.unwrap();
 
         // Verify the body appears in the output
         // Format: "4\r\n" (3 bytes) + body (4 bytes) + "\r\n0\r\n\r\n"
@@ -789,32 +829,32 @@ mod tests {
     // Round-trip tests: read then write
     // ============================================
 
-    #[test]
-    fn test_chunked_roundtrip() {
+    #[tokio::test]
+    async fn test_chunked_roundtrip() {
         let original_body = b"Test body content for round trip";
 
         // Write as chunked
         let mut encoded = Vec::new();
-        write_chunked_body(&mut encoded, original_body).unwrap();
+        write_chunked_body(&mut encoded, original_body).await.unwrap();
 
         // Read back
         let mut cursor = Cursor::new(encoded);
-        let decoded = read_chunked_body(&mut cursor).unwrap();
+        let decoded = read_chunked_body(&mut cursor, MAX_REWRITABLE_BODY_SIZE).await.unwrap();
 
         assert_eq!(decoded, original_body);
     }
 
-    #[test]
-    fn test_chunked_roundtrip_binary() {
+    #[tokio::test]
+    async fn test_chunked_roundtrip_binary() {
         let original_body: Vec<u8> = (0..=255).collect();
 
         // Write as chunked
         let mut encoded = Vec::new();
-        write_chunked_body(&mut encoded, &original_body).unwrap();
+        write_chunked_body(&mut encoded, &original_body).await.unwrap();
 
         // Read back
         let mut cursor = Cursor::new(encoded);
-        let decoded = read_chunked_body(&mut cursor).unwrap();
+        let decoded = read_chunked_body(&mut cursor, MAX_REWRITABLE_BODY_SIZE).await.unwrap();
 
         assert_eq!(decoded, original_body);
     }

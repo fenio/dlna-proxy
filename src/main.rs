@@ -76,7 +76,7 @@ async fn main() -> Result<()> {
     let mut url = config.description_url;
 
     let _tcp_proxy_thread = if let Some(proxy_addr) = config.proxy {
-        let server_addr = config::sockaddr_from_url(&url);
+        let server_addr = config::sockaddr_from_url(&url)?;
 
         url.set_ip_host(proxy_addr.ip()).unwrap();
         url.set_port(Some(proxy_addr.port())).unwrap();
@@ -90,7 +90,7 @@ async fn main() -> Result<()> {
 
         trace!(target: "dlnaproxy", "server: {}", server_addr);
 
-        Some(proxy.start(server_addr, proxy_addr)?)
+        Some(proxy.start(server_addr, proxy_addr).await?)
     } else {
         None
     };

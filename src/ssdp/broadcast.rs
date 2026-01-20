@@ -54,29 +54,43 @@ pub async fn broadcast_task(broadcaster: Arc<SSDPBroadcast>, period: Duration) {
 }
 
 /// Waits for a shutdown signal (SIGINT or SIGTERM on Unix, Ctrl+C on Windows)
-async fn wait_for_shutdown_signal() -> &'static str {
+async fn wait_for_shutdown_signal() -> Result<&'static str> {
     #[cfg(unix)]
     {
         let mut sigterm = unix_signal(SignalKind::terminate())
-            .expect("Failed to install SIGTERM handler");
+            .map_err(|e| anyhow::anyhow!("Failed to install SIGTERM handler: {}", e))?;
 
-        tokio::select! {
-            _ = signal::ctrl_c() => "SIGINT",
+        let signal_name = tokio::select! {
+            result = signal::ctrl_c() => {
+                result.map_err(|e| anyhow::anyhow!("Failed to wait for SIGINT: {}", e))?;
+                "SIGINT"
+            }
             _ = sigterm.recv() => "SIGTERM",
-        }
+        };
+        Ok(signal_name)
     }
 
     #[cfg(not(unix))]
     {
-        signal::ctrl_c().await.expect("Failed to install Ctrl+C handler");
-        "Ctrl+C"
+        signal::ctrl_c()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to install Ctrl+C handler: {}", e))?;
+        Ok("Ctrl+C")
     }
 }
 
 pub async fn shutdown_handler(broadcaster: Arc<SSDPBroadcast>) -> Result<()> {
     debug!(target:"dlnaproxy", "Shutdown handler waiting for SIGINT/SIGTERM...");
 
-    let signal_name = wait_for_shutdown_signal().await;
+    let signal_name = match wait_for_shutdown_signal().await {
+        Ok(name) => name,
+        Err(e) => {
+            warn!(target: "dlnaproxy", "Failed to set up signal handler: {}. Shutdown handler disabled.", e);
+            // Wait indefinitely since we can't catch signals
+            std::future::pending::<()>().await;
+            unreachable!()
+        }
+    };
 
     let socket = broadcaster.ssdp_socket.clone();
     let helper = broadcaster.ssdp_helper.clone();

@@ -44,7 +44,6 @@ impl TryFrom<CommandLineConf> for Config {
 }
 
 fn get_config(args: CommandLineConf) -> Result<Config> {
-    println!("{:?}", args);
 
     let config_as_file = args
         .config
@@ -145,22 +144,24 @@ fn get_config(args: CommandLineConf) -> Result<Config> {
     })
 }
 
-pub fn sockaddr_from_url(url: &Url) -> SocketAddr {
-    let host = url.host().expect("Unsupported URL.");
+pub fn sockaddr_from_url(url: &Url) -> Result<SocketAddr> {
+    let host = url
+        .host()
+        .ok_or_else(|| anyhow!("URL has no host: {}", url))?;
 
     let port: u16 = url
         .port_or_known_default()
-        .expect("Unknown port or scheme.");
+        .ok_or_else(|| anyhow!("URL has no port and unknown scheme: {}", url))?;
 
     let address = format!("{}:{}", host, port);
 
     let addresses: Vec<SocketAddr> = address
         .to_socket_addrs()
-        .expect("Couldn't resolve or build socket address from submitted URL.")
+        .with_context(|| format!("Couldn't resolve or build socket address from URL: {}", url))?
         .collect();
 
     addresses
         .first()
-        .expect("No valid socket address.")
-        .to_owned()
+        .copied()
+        .ok_or_else(|| anyhow!("No valid socket address resolved for URL: {}", url))
 }

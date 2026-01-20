@@ -1,6 +1,6 @@
 [package]
 name = "dlna-proxy"
-version = "0.5.0"
+version = "0.6.0"
 authors = ["Nic0w", "Bartosz Fenski <fenio@debian.org>"]
 edition = "2021"
 description = "A DLNA proxy that enables use of a DLNA server past the local network boundary"
@@ -29,5 +29,5 @@ serde = { version = "1.0", features = ["derive"] }
 quick-xml = { version = "0.38", features = ["serialize"] }
 thiserror = "2.0"
 anyhow = "1.0"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "signal", "io-util"] }
 socket2 = { version = "0.6", features = ["all"] }
