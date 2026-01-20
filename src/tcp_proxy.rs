@@ -1,4 +1,4 @@
-use log::{debug, info, trace, warn};
+use log::{debug, error, info, trace, warn};
 
 use std::{
     io::{self, BufRead, BufReader, Read, Write},
@@ -35,12 +35,15 @@ impl TCPProxy {
         }
     }
 
-    pub fn start(self, to: SocketAddr, from: SocketAddr) -> JoinHandle<()> {
-        let listener = TcpListener::bind(from).expect("Unable to bind proxy addr");
+    pub fn start(self, to: SocketAddr, from: SocketAddr) -> io::Result<JoinHandle<()>> {
+        let listener = TcpListener::bind(from).map_err(|e| {
+            error!(target: "dlnaproxy", "Failed to bind TCP proxy to {}: {}", from, e);
+            e
+        })?;
 
         info!(target: "dlnaproxy", "Proxying TCP connections from {} to {} (with URL rewriting)", from, to);
 
-        thread::spawn(self.listen_loop(listener, to))
+        Ok(thread::spawn(self.listen_loop(listener, to)))
     }
 
     fn listen_loop(self, listener: TcpListener, origin: SocketAddr) -> impl FnOnce() {

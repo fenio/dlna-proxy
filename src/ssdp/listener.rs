@@ -1,5 +1,4 @@
-use log::debug;
-use log::{info, trace, warn};
+use log::{debug, error, info, trace, warn};
 
 use std::borrow::Cow;
 use std::{collections::HashMap, sync::Arc};
@@ -47,10 +46,13 @@ pub async fn listen_task(ssdp_socket: Arc<UdpSocket>, ssdp_helper: Arc<Interacti
     loop {
         let mut buffer: [u8; 1024] = [0; 1024];
 
-        let (bytes_read, src_addr) = ssdp_socket
-            .recv_from(&mut buffer)
-            .await
-            .expect("failed to read!");
+        let (bytes_read, src_addr) = match ssdp_socket.recv_from(&mut buffer).await {
+            Ok(result) => result,
+            Err(e) => {
+                error!(target: "dlnaproxy", "Failed to receive SSDP packet: {}. Continuing...", e);
+                continue;
+            }
+        };
 
         trace!(target: "dlnaproxy", "Read {amount} bytes sent by {sender}.", amount=bytes_read, sender=src_addr);
 

@@ -90,7 +90,7 @@ async fn main() -> Result<()> {
 
         trace!(target: "dlnaproxy", "server: {}", server_addr);
 
-        Some(proxy.start(server_addr, proxy_addr))
+        Some(proxy.start(server_addr, proxy_addr)?)
     } else {
         None
     };

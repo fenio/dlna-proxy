@@ -2,6 +2,9 @@ use log::{debug, info, warn};
 use tokio::net::UdpSocket;
 use tokio::{signal, time};
 
+#[cfg(unix)]
+use tokio::signal::unix::{signal as unix_signal, SignalKind};
+
 use std::borrow::Borrow as _;
 use std::time::Duration;
 use std::{process, sync::Arc};
@@ -32,7 +35,7 @@ impl SSDPBroadcast {
 }
 
 pub async fn broadcast_task(broadcaster: Arc<SSDPBroadcast>, period: Duration) {
-    let _handle = tokio::spawn(ctrlc_handler(broadcaster.clone()));
+    let _handle = tokio::spawn(shutdown_handler(broadcaster.clone()));
 
     debug!(target: "dlnaproxy", "About to schedule broadcast every {}s", period.as_secs());
 
@@ -50,16 +53,35 @@ pub async fn broadcast_task(broadcaster: Arc<SSDPBroadcast>, period: Duration) {
     }
 }
 
-pub async fn ctrlc_handler(broadcaster: Arc<SSDPBroadcast>) -> Result<()> {
-    debug!(target:"dlnaproxy", "SIGINT handler waiting...");
+/// Waits for a shutdown signal (SIGINT or SIGTERM on Unix, Ctrl+C on Windows)
+async fn wait_for_shutdown_signal() -> &'static str {
+    #[cfg(unix)]
+    {
+        let mut sigterm = unix_signal(SignalKind::terminate())
+            .expect("Failed to install SIGTERM handler");
 
-    signal::ctrl_c().await?;
+        tokio::select! {
+            _ = signal::ctrl_c() => "SIGINT",
+            _ = sigterm.recv() => "SIGTERM",
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        signal::ctrl_c().await.expect("Failed to install Ctrl+C handler");
+        "Ctrl+C"
+    }
+}
+
+pub async fn shutdown_handler(broadcaster: Arc<SSDPBroadcast>) -> Result<()> {
+    debug!(target:"dlnaproxy", "Shutdown handler waiting for SIGINT/SIGTERM...");
+
+    let signal_name = wait_for_shutdown_signal().await;
 
     let socket = broadcaster.ssdp_socket.clone();
-
     let helper = broadcaster.ssdp_helper.clone();
 
-    debug!(target:"dlnaproxy", "SIGINT handler triggered, sending ssdp:bybye !");
+    debug!(target:"dlnaproxy", "{} received, sending ssdp:byebye!", signal_name);
 
     // Use a timeout for the byebye message to ensure we exit promptly
     let byebye_future = helper.send_byebye(&socket, SSDP_ADDRESS);
@@ -69,7 +91,7 @@ pub async fn ctrlc_handler(broadcaster: Arc<SSDPBroadcast>) -> Result<()> {
         Err(_) => warn!(target: "dlnaproxy", "Timeout sending ssdp:byebye"),
     }
 
-    info!(target: "dlnaproxy", "Exiting !");
+    info!(target: "dlnaproxy", "Exiting!");
 
     process::exit(0);
 }
