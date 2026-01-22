@@ -2,7 +2,7 @@
 
 This is a fork of [Nic0w/dlnaproxy](https://github.com/Nic0w/dlnaproxy).
 
-`dlna-proxy` enables the use of a DLNA server (e.g., MiniDLNA) past the local network boundary.
+`dlna-proxy` enables the use of a DLNA server (e.g., MiniDLNA or [DMS](https://github.com/anacrolix/dms)) past the local network boundary.
 
 ## Use case
 
