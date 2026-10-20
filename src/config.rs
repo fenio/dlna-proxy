@@ -8,6 +8,7 @@ use std::{
 use reqwest::Url;
 use serde::Deserialize;
 
+use crate::tcp_proxy::NameOverride;
 use crate::CommandLineConf;
 
 #[derive(Deserialize)]
@@ -21,6 +22,8 @@ struct RawConfig {
     connect_timeout: Option<u64>,
     proxy_timeout: Option<u64>,
     stream_timeout: Option<u64>,
+    name: Option<String>,
+    name_suffix: Option<String>,
 }
 
 pub struct Config {
@@ -33,6 +36,7 @@ pub struct Config {
     pub connect_timeout: time::Duration,
     pub proxy_timeout: time::Duration,
     pub stream_timeout: time::Duration,
+    pub name_override: Option<NameOverride>,
 }
 
 impl TryFrom<CommandLineConf> for Config {
@@ -60,6 +64,8 @@ fn get_config(args: CommandLineConf) -> Result<Config> {
         connect_timeout,
         proxy_timeout,
         stream_timeout,
+        name,
+        name_suffix,
     ) = if let Some(config_file) = config_as_file {
         let raw_config: RawConfig =
             toml::from_str(&config_file).context("failed to parse config file.")?;
@@ -88,6 +94,8 @@ fn get_config(args: CommandLineConf) -> Result<Config> {
             raw_config.connect_timeout,
             raw_config.proxy_timeout,
             raw_config.stream_timeout,
+            raw_config.name,
+            raw_config.name_suffix,
         )
     } else {
         (
@@ -101,6 +109,8 @@ fn get_config(args: CommandLineConf) -> Result<Config> {
             args.connect_timeout,
             args.proxy_timeout,
             args.stream_timeout,
+            args.name,
+            args.name_suffix,
         )
     };
 
@@ -131,6 +141,23 @@ fn get_config(args: CommandLineConf) -> Result<Config> {
         .map(time::Duration::from_secs)
         .unwrap_or(time::Duration::from_secs(300));
 
+    let name_override = match (name, name_suffix) {
+        (Some(_), Some(_)) => return Err(anyhow!("'name' and 'name_suffix' cannot be used together")),
+        (Some(name), None) => Some(NameOverride::Replace(name)),
+        (None, Some(suffix)) => Some(NameOverride::Suffix(suffix)),
+        (None, None) => None,
+    };
+
+    if let Some(NameOverride::Replace(text) | NameOverride::Suffix(text)) = &name_override {
+        if text.trim().is_empty() {
+            return Err(anyhow!("'name' / 'name_suffix' cannot be empty"));
+        }
+        // The name lives in the device description, which clients only fetch through us in proxy mode
+        if proxy.is_none() {
+            return Err(anyhow!("'name' / 'name_suffix' require proxy mode ('proxy' / -p)"));
+        }
+    }
+
     Ok(Config {
         description_url,
         proxy,
@@ -141,6 +168,7 @@ fn get_config(args: CommandLineConf) -> Result<Config> {
         connect_timeout,
         proxy_timeout,
         stream_timeout,
+        name_override,
     })
 }
 

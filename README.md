@@ -89,6 +89,20 @@ dlna-proxy -u http://REMOTE_SERVER:8200/rootDesc.xml -p LOCAL_IP:8200 -vv
 
 This binds a local TCP proxy that forwards connections to the remote server. The proxy intercepts HTTP responses and **rewrites URLs on the fly**, replacing references to the remote server with the local proxy address. This ensures that DLNA clients receive URLs they can actually reach, even when the original server URLs in XML descriptions and other responses would be inaccessible from the client's network.
 
+### Change the announced name
+
+In proxy mode, you can change the name that clients display for the server (the `friendlyName` from its device description). This is handy when the same server is also known on another network, or you want to tell it apart:
+
+```bash
+# Append text: "wdtvlivehub" becomes "wdtvlivehub (DadHouse)"
+dlna-proxy -u http://REMOTE_SERVER:8200/rootDesc.xml -p LOCAL_IP:8200 -s "(DadHouse)"
+
+# Replace the name entirely
+dlna-proxy -u http://REMOTE_SERVER:8200/rootDesc.xml -p LOCAL_IP:8200 -n "Dad's media"
+```
+
+This requires `-p`, because clients only fetch the description through dlna-proxy in proxy mode. `-n` and `-s` cannot be combined. Some clients cache device names, so the new name may take a while to show up.
+
 ### Wait for server availability
 
 If the remote server might not be available immediately (e.g., VPN not yet connected at boot), use the wait option:
@@ -118,6 +132,8 @@ Options:
       --connect-timeout <SECONDS>      HTTP connect timeout for fetching XML description (default: 2)
       --proxy-timeout <SECONDS>        TCP connect timeout for proxy connections to origin (default: 10)
       --stream-timeout <SECONDS>       TCP read/write timeout for active proxy streams (default: 300)
+  -n, --name <NAME>                    Replace the server's announced name (requires --proxy)
+  -s, --name-suffix <TEXT>             Append text to the server's announced name (requires --proxy)
   -v, --verbose...                     Verbosity level (-v = info, -vv = debug, -vvv = trace)
   -h, --help                           Print help
   -V, --version                        Print version
@@ -170,6 +186,14 @@ period = 895
 # Only applies when proxy is enabled
 # Default: 300 (5 minutes)
 #stream_timeout = 300
+
+# Replace the server's announced name (friendlyName)
+# Only applies when proxy is enabled; cannot be combined with name_suffix
+#name = "Dad's media"
+
+# Append text to the server's announced name, e.g. "wdtvlivehub (DadHouse)"
+# Only applies when proxy is enabled; cannot be combined with name
+#name_suffix = "(DadHouse)"
 
 # Verbosity level:
 #   0 = Warn (default)
