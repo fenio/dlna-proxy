@@ -23,7 +23,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[clap(author, version, about, long_about = None)]
 struct CommandLineConf {
     /// TOML config file.
-    #[clap(short, long, value_name = "/path/to/config.conf", conflicts_with_all(&["description_url", "interval", "proxy"]))]
+    #[clap(short, long, value_name = "/path/to/config.conf", conflicts_with_all(&["description_url", "interval", "proxy", "name", "name_suffix"]))]
     config: Option<PathBuf>,
 
     /// URL pointing to the remote DLNA server's root XML description.
@@ -58,6 +58,14 @@ struct CommandLineConf {
     #[clap(long, value_name = "SECONDS")]
     stream_timeout: Option<u64>,
 
+    /// Replace the server's announced name (requires --proxy).
+    #[clap(short = 'n', long, value_name = "NAME", conflicts_with = "name_suffix")]
+    name: Option<String>,
+
+    /// Append text to the server's announced name (requires --proxy).
+    #[clap(short = 's', long, value_name = "TEXT")]
+    name_suffix: Option<String>,
+
     /// Verbosity level. The more v, the more verbose.
     #[clap(short, long, action=ArgAction::Count)]
     verbose: u8,
@@ -86,6 +94,7 @@ async fn main() -> Result<()> {
             config.stream_timeout,
             server_addr,
             proxy_addr,
+            config.name_override,
         );
 
         trace!(target: "dlnaproxy", "server: {}", server_addr);

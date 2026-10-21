@@ -19,11 +19,37 @@ const MAX_REWRITABLE_BODY_SIZE: usize = 10 * 1024 * 1024;
 /// Provides backpressure to prevent resource exhaustion.
 const MAX_CONCURRENT_CONNECTIONS: usize = 100;
 
+/// How to change the `<friendlyName>` announced in the device description.
+#[derive(Debug, Clone, PartialEq)]
+pub enum NameOverride {
+    /// Replace the name entirely.
+    Replace(String),
+    /// Append text to the original name, separated by a space.
+    Suffix(String),
+}
+
 pub struct TCPProxy {
     connect_timeout: Duration,
     stream_timeout: Duration,
+    rewriter: Arc<BodyRewriter>,
+}
+
+/// Rewrites text response bodies: origin URLs -> proxy URLs, plus optional friendlyName change.
+struct BodyRewriter {
     origin_url_base: String,
     proxy_url_base: String,
+    name_override: Option<NameOverride>,
+}
+
+impl BodyRewriter {
+    fn rewrite(&self, body: &str) -> String {
+        let body = body.replace(&self.origin_url_base, &self.proxy_url_base);
+
+        match &self.name_override {
+            Some(name_override) => rewrite_friendly_name(&body, name_override),
+            None => body,
+        }
+    }
 }
 
 impl TCPProxy {
@@ -32,6 +58,7 @@ impl TCPProxy {
         stream_timeout: Duration,
         origin_addr: SocketAddr,
         proxy_addr: SocketAddr,
+        name_override: Option<NameOverride>,
     ) -> Self {
         // Create URL bases for rewriting (e.g., "http://192.168.1.41:55555" -> "http://192.168.1.52:8100")
         let origin_url_base = format!("http://{}:{}", origin_addr.ip(), origin_addr.port());
@@ -40,8 +67,11 @@ impl TCPProxy {
         TCPProxy {
             connect_timeout,
             stream_timeout,
-            origin_url_base,
-            proxy_url_base,
+            rewriter: Arc::new(BodyRewriter {
+                origin_url_base,
+                proxy_url_base,
+                name_override,
+            }),
         }
     }
 
@@ -55,8 +85,7 @@ impl TCPProxy {
 
         let connect_timeout = self.connect_timeout;
         let stream_timeout = self.stream_timeout;
-        let origin_url_base = self.origin_url_base;
-        let proxy_url_base = self.proxy_url_base;
+        let rewriter = self.rewriter;
 
         Ok(tokio::spawn(async move {
             listen_loop(
@@ -64,8 +93,7 @@ impl TCPProxy {
                 to,
                 connect_timeout,
                 stream_timeout,
-                origin_url_base,
-                proxy_url_base,
+                rewriter,
             )
             .await
         }))
@@ -77,8 +105,7 @@ async fn listen_loop(
     origin: SocketAddr,
     connect_timeout: Duration,
     _stream_timeout: Duration,
-    origin_url_base: String,
-    proxy_url_base: String,
+    rewriter: Arc<BodyRewriter>,
 ) {
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
 
@@ -116,12 +143,11 @@ async fn listen_loop(
             }
         };
 
-        let origin_base = origin_url_base.clone();
-        let proxy_base = proxy_url_base.clone();
+        let rewriter = rewriter.clone();
 
         // Spawn handler task - permit is moved in and released when task completes
         tokio::spawn(async move {
-            handle_conn(proxied_stream, to_stream, peer_addr, origin_base, proxy_base).await;
+            handle_conn(proxied_stream, to_stream, peer_addr, rewriter).await;
             drop(permit); // Explicitly release permit when connection closes
         });
 
@@ -133,8 +159,7 @@ async fn handle_conn(
     client_stream: TcpStream,
     origin_stream: TcpStream,
     peer_addr: SocketAddr,
-    origin_url_base: String,
-    proxy_url_base: String,
+    rewriter: Arc<BodyRewriter>,
 ) {
     // Split streams for bidirectional communication
     let (client_read, client_write) = client_stream.into_split();
@@ -161,8 +186,7 @@ async fn handle_conn(
         if let Err(e) = proxy_response_with_rewrite(
             origin_read,
             client_write,
-            &origin_url_base,
-            &proxy_url_base,
+            &rewriter,
             peer_addr_copy,
         )
         .await
@@ -232,8 +256,7 @@ fn should_rewrite_content(headers: &str) -> bool {
 async fn proxy_response_with_rewrite(
     origin_read: tokio::net::tcp::OwnedReadHalf,
     mut client_write: tokio::net::tcp::OwnedWriteHalf,
-    origin_url_base: &str,
-    proxy_url_base: &str,
+    rewriter: &BodyRewriter,
     peer_addr: SocketAddr,
 ) -> io::Result<()> {
     let mut reader = BufReader::new(origin_read);
@@ -358,9 +381,9 @@ async fn proxy_response_with_rewrite(
             continue;
         };
 
-        // Rewrite URLs in the body
+        // Rewrite URLs (and friendlyName, if requested) in the body
         let body_str = String::from_utf8_lossy(&body);
-        let rewritten_body = body_str.replace(origin_url_base, proxy_url_base);
+        let rewritten_body = rewriter.rewrite(&body_str);
         let rewritten_bytes = rewritten_body.as_bytes();
 
         // Update Content-Length if body was rewritten and size changed
@@ -496,6 +519,38 @@ async fn write_chunked_body<W: AsyncWriteExt + Unpin>(
     // Write terminating chunk
     writer.write_all(b"0\r\n\r\n").await?;
     Ok(())
+}
+
+/// Change the first `<friendlyName>` element (the root device's name) in a device description.
+/// Embedded devices keep their names. Bodies without the element are returned unchanged.
+fn rewrite_friendly_name(body: &str, name_override: &NameOverride) -> String {
+    const OPEN: &str = "<friendlyName>";
+    const CLOSE: &str = "</friendlyName>";
+
+    let Some(start) = body.find(OPEN).map(|i| i + OPEN.len()) else {
+        return body.to_string();
+    };
+    let Some(end) = body[start..].find(CLOSE).map(|i| start + i) else {
+        return body.to_string();
+    };
+
+    // The original name is already XML-escaped; only the user-supplied text needs escaping.
+    let new_name = match name_override {
+        NameOverride::Replace(name) => xml_escape(name),
+        NameOverride::Suffix(suffix) => {
+            format!("{} {}", body[start..end].trim_end(), xml_escape(suffix))
+        }
+    };
+
+    format!("{}{}{}", &body[..start], new_name, &body[end..])
+}
+
+fn xml_escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 /// Update Content-Length header in the headers string
@@ -911,5 +966,72 @@ mod tests {
 
         let result = body.replace(origin, proxy);
         assert_eq!(result, body);
+    }
+
+    // ============================================
+    // friendlyName rewriting tests
+    // ============================================
+
+    const DESC: &str = r#"<root>
+  <device>
+    <deviceType>urn:schemas-upnp-org:device:MediaServer:1</deviceType>
+    <friendlyName>wdtvlivehub</friendlyName>
+    <deviceList>
+      <device>
+        <friendlyName>embedded</friendlyName>
+      </device>
+    </deviceList>
+  </device>
+</root>"#;
+
+    #[test]
+    fn test_friendly_name_suffix() {
+        let result = rewrite_friendly_name(DESC, &NameOverride::Suffix("(DadHouse)".into()));
+        assert!(result.contains("<friendlyName>wdtvlivehub (DadHouse)</friendlyName>"));
+        assert!(result.contains("<friendlyName>embedded</friendlyName>"));
+    }
+
+    #[test]
+    fn test_friendly_name_replace() {
+        let result = rewrite_friendly_name(DESC, &NameOverride::Replace("Dad's media".into()));
+        assert!(result.contains("<friendlyName>Dad&apos;s media</friendlyName>"));
+        assert!(!result.contains("wdtvlivehub"));
+        assert!(result.contains("<friendlyName>embedded</friendlyName>"));
+    }
+
+    #[test]
+    fn test_friendly_name_escapes_suffix() {
+        let body = "<friendlyName>Tom &amp; Jerry</friendlyName>";
+        let result = rewrite_friendly_name(body, &NameOverride::Suffix("<A&B>".into()));
+        assert_eq!(result, "<friendlyName>Tom &amp; Jerry &lt;A&amp;B&gt;</friendlyName>");
+    }
+
+    #[test]
+    fn test_friendly_name_absent() {
+        let body = "<root><device><UDN>uuid:x</UDN></device></root>";
+        let result = rewrite_friendly_name(body, &NameOverride::Replace("x".into()));
+        assert_eq!(result, body);
+    }
+
+    #[test]
+    fn test_friendly_name_ignores_escaped_xml() {
+        // DIDL-Lite inside SOAP responses is escaped and must not be touched
+        let body = "<Result>&lt;friendlyName&gt;foo&lt;/friendlyName&gt;</Result>";
+        let result = rewrite_friendly_name(body, &NameOverride::Replace("x".into()));
+        assert_eq!(result, body);
+    }
+
+    #[test]
+    fn test_body_rewriter_urls_and_name() {
+        let rewriter = BodyRewriter {
+            origin_url_base: "http://192.168.1.41:55555".into(),
+            proxy_url_base: "http://192.168.1.52:8100".into(),
+            name_override: Some(NameOverride::Suffix("(DadHouse)".into())),
+        };
+        let body = "<URLBase>http://192.168.1.41:55555/</URLBase><friendlyName>hub</friendlyName>";
+        assert_eq!(
+            rewriter.rewrite(body),
+            "<URLBase>http://192.168.1.52:8100/</URLBase><friendlyName>hub (DadHouse)</friendlyName>"
+        );
     }
 }

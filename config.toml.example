@@ -40,6 +40,14 @@ period = 895
 # Default: 300 (5 minutes)
 #stream_timeout = 300
 
+# Replace the server's announced name (friendlyName)
+# Only applies when proxy is enabled; cannot be combined with name_suffix
+#name = "Dad's media"
+
+# Append text to the server's announced name, e.g. "wdtvlivehub (DadHouse)"
+# Only applies when proxy is enabled; cannot be combined with name
+#name_suffix = "(DadHouse)"
+
 # Verbosity level:
 #   0 = Warn (default)
 #   1 = Info
